@@ -1,4 +1,7 @@
+//! Main entry point for the Social API application.
+
 mod config;
+mod domain;
 
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 

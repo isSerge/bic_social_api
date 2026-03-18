@@ -4,7 +4,7 @@ use ::config::{Config as RawConfig, ConfigError, Environment};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
-pub struct Config {
+pub struct AppConfig {
     // ── Required ─────────────────────────────────────────────────────────────
     pub database_url: String,
     pub read_database_url: String,
@@ -52,7 +52,7 @@ pub struct Config {
     pub leaderboard_refresh_interval_secs: u64,
 }
 
-impl Config {
+impl AppConfig {
     /// Load configuration from environment variables.
     pub fn new() -> Result<Self, ConfigError> {
         dotenvy::dotenv().ok();
@@ -185,7 +185,7 @@ mod tests {
             env::set_var("PROFILE_API_URL", "http://localhost/profile");
         }
 
-        let config = Config::new().expect("Failed to load config");
+        let config = AppConfig::new().expect("Failed to load config");
 
         assert_eq!(config.database_url, "postgres://localhost/db");
         assert_eq!(config.log_level, default_log_level());
@@ -205,12 +205,12 @@ mod tests {
             env::set_var("CONTENT_API_BONUS_HUNTER_URL", "http://localhost/bonus");
             env::set_var("CONTENT_API_TOP_PICKS_URL", "http://localhost/top");
             env::set_var("PROFILE_API_URL", "http://localhost/profile");
-            
+
             env::set_var("LOG_LEVEL", "debug");
             env::set_var("DB_MAX_CONNECTIONS", "50");
         }
 
-        let config = Config::new().expect("Failed to load config");
+        let config = AppConfig::new().expect("Failed to load config");
 
         assert_eq!(config.http_port, 9090);
         assert_eq!(config.log_level, "debug");

@@ -1,16 +1,21 @@
 //! Main entry point for the Social API application.
 
+mod clients;
 mod config;
 mod domain;
+mod error;
+mod http;
+mod repository;
+pub mod server_utils;
 
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::config::Config;
+use crate::config::AppConfig;
 
 fn main() {
     // Load configuration from environment variables.
     let config =
-        Config::new().expect("Configuration error: missing or invalid environment variables");
+        AppConfig::new().expect("Configuration error: missing or invalid environment variables");
 
     // Initialize logging based on the loaded configuration.
     tracing_subscriber::registry()

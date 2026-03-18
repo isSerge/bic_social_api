@@ -1,5 +1,5 @@
 mod app;
 mod registry;
 
-pub use app::Config;
+pub use app::AppConfig;
 pub use registry::ContentTypeRegistry;

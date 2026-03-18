@@ -1,4 +1,4 @@
-
+//! Configuration management for the Social API application.
 
 use ::config::{Config as RawConfig, ConfigError, Environment};
 use serde::Deserialize;

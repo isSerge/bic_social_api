@@ -7,10 +7,12 @@ use axum::{
 use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
-    net::SocketAddr,
     sync::Arc,
 };
 use uuid::Uuid;
+
+#[path = "../server_utils.rs"]
+mod server_utils;
 
 #[derive(Clone)]
 struct AppState {
@@ -33,16 +35,7 @@ async fn main() {
     let state = AppState { known_content: Arc::new(seed_content()) };
 
     let app = create_app(state);
-    let port = std::env::var("PORT").ok().and_then(|v| v.parse::<u16>().ok()).unwrap_or(8081);
-
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .expect("failed to bind mock content api listener");
-
-    tracing::info!("Mock Content API listening on {}", addr);
-
-    axum::serve(listener, app).await.expect("mock_content_api server failed");
+    server_utils::serve_mock(app, 8081, "Mock Content API").await;
 }
 
 fn create_app(state: AppState) -> Router {
@@ -138,15 +131,7 @@ mod tests {
 
     async fn spawn_test_server() -> String {
         let app = create_app(AppState { known_content: Arc::new(seed_content()) });
-        let listener =
-            tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind test listener");
-        let addr = listener.local_addr().expect("local addr");
-
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-
-        format!("http://{}", addr)
+        server_utils::spawn_test_server(app).await
     }
 
     #[tokio::test]

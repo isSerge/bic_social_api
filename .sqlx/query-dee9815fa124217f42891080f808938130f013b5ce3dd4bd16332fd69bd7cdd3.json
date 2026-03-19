@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COALESCE(lc.count, 0) AS \"count!: i64\"\n            FROM UNNEST($1::text[], $2::uuid[]) WITH ORDINALITY AS u(content_type, content_id, ord)\n            LEFT JOIN like_counts lc\n              ON lc.content_type = u.content_type\n             AND lc.content_id = u.content_id\n            ORDER BY u.ord\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!: i64",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "dee9815fa124217f42891080f808938130f013b5ce3dd4bd16332fd69bd7cdd3"
+}

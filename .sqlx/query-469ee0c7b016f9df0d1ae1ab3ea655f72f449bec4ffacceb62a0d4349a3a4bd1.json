@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT l.created_at AS \"created_at?: DateTime<Utc>\"\n            FROM UNNEST($1::text[], $2::uuid[]) WITH ORDINALITY AS u(content_type, content_id, ord)\n            LEFT JOIN likes l\n              ON l.user_id = $3\n             AND l.content_type = u.content_type\n             AND l.content_id = u.content_id\n            ORDER BY u.ord\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_at?: DateTime<Utc>",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "469ee0c7b016f9df0d1ae1ab3ea655f72f449bec4ffacceb62a0d4349a3a4bd1"
+}

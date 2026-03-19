@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO like_counts (content_type, content_id, count)\n                VALUES ($1, $2, 1)\n                ON CONFLICT (content_type, content_id)\n                DO UPDATE SET\n                    count = like_counts.count + 1,\n                    updated_at = NOW()\n                RETURNING count\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f6c7a41220f7f8727cd9da583abe9cac45a14ac4b6c83b5024c0bd4a3c999130"
+}

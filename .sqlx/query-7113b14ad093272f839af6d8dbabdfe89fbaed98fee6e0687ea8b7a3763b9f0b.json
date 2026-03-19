@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT content_type, content_id, count AS \"like_count!: i64\"\n                FROM like_counts\n                WHERE ($1::text IS NULL OR content_type = $1)\n                ORDER BY count DESC, content_type ASC, content_id ASC\n                LIMIT $2\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "content_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "content_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "like_count!: i64",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7113b14ad093272f839af6d8dbabdfe89fbaed98fee6e0687ea8b7a3763b9f0b"
+}

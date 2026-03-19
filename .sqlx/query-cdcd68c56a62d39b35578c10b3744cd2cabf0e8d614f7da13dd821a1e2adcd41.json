@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE like_counts\n                SET count = GREATEST(count - 1, 0),\n                    updated_at = NOW()\n                WHERE content_type = $1 AND content_id = $2\n                RETURNING count\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cdcd68c56a62d39b35578c10b3744cd2cabf0e8d614f7da13dd821a1e2adcd41"
+}

@@ -1,3 +1,8 @@
+pub mod error;
+mod like;
+
+pub use like::LikeRecord;
+
 use std::sync::Arc;
 
 /// Domain-specific types and logic for the Social API application.

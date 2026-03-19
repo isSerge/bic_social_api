@@ -29,7 +29,8 @@ thiserror = "2.0.18"
 # TODO: replace full with necessary features only
 tokio = { version = "1.50.0", features = ["full"] }
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+tower-http = { version = "0.6.2", features = ["trace"] }
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
 
 [[bin]]

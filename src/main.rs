@@ -17,6 +17,8 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 use crate::{
     config::{AppConfig, ContentTypeRegistry},
     http::AppState,
+    like_service::LikeService,
+    repository::like_repo::PgLikeRepository,
 };
 
 #[tokio::main]
@@ -45,10 +47,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Init content type registry
     let content_type_registry = ContentTypeRegistry::from_env();
 
+    // Initialize database connection pools and run migrations
+    let (writer_pool, reader_pool) = repository::setup_database_pools(&config)
+        .await
+        .expect("Failed to initialize database pools");
+
+    // Create Like Repository, and Like Service
+    let like_repo = PgLikeRepository::new(writer_pool, reader_pool);
+    let like_service = LikeService::new(Arc::new(like_repo));
+
     // Create shared application state
     let state = AppState {
         config: Arc::clone(&config),
         content_type_registry: Arc::new(content_type_registry),
+        like_service: Arc::new(like_service),
         // TODO: add clients and repos
     };
 

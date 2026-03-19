@@ -5,6 +5,7 @@ mod config;
 mod domain;
 mod error;
 mod http;
+mod like_service;
 mod repository;
 pub mod server_utils;
 

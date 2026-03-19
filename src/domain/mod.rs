@@ -1,6 +1,7 @@
-pub mod error;
+mod error;
 mod like;
 
+pub use error::DomainError;
 pub use like::LikeRecord;
 
 use std::sync::Arc;

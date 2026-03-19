@@ -1,5 +1,4 @@
-use axum::response::IntoResponse;
-use reqwest::StatusCode;
+use axum::{http::StatusCode, response::IntoResponse};
 
 /// POST /v1/likes
 pub async fn like() -> impl IntoResponse {

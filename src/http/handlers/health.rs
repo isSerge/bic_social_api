@@ -1,5 +1,4 @@
-use axum::response::IntoResponse;
-use reqwest::StatusCode;
+use axum::{http::StatusCode, response::IntoResponse};
 
 /// GET /health/live
 pub async fn live() -> impl IntoResponse {

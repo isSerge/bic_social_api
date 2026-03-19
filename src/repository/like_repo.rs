@@ -8,13 +8,14 @@ use uuid::Uuid;
 use super::error::RepoError;
 
 /// Repository trait for managing likes in the application.
+#[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait LikeRepository: Send + Sync {
     /// Inserts a like record into the repository.
     async fn insert_like(
         &self,
         user_id: Uuid,
-        content_type: &ContentType,
+        content_type: ContentType,
         content_id: Uuid,
     ) -> Result<(bool, i64, DateTime<Utc>), RepoError>;
 
@@ -22,14 +23,14 @@ pub trait LikeRepository: Send + Sync {
     async fn delete_like(
         &self,
         user_id: Uuid,
-        content_type: &ContentType,
+        content_type: ContentType,
         content_id: Uuid,
     ) -> Result<(bool, i64), RepoError>;
 
     /// Retrieves the total like count for a specific content item.
     async fn get_count(
         &self,
-        content_type: &ContentType,
+        content_type: ContentType,
         content_id: Uuid,
     ) -> Result<i64, RepoError>;
 
@@ -37,7 +38,7 @@ pub trait LikeRepository: Send + Sync {
     async fn get_status(
         &self,
         user_id: Uuid,
-        content_type: &ContentType,
+        content_type: ContentType,
         content_id: Uuid,
     ) -> Result<Option<DateTime<Utc>>, RepoError>;
 
@@ -46,7 +47,7 @@ pub trait LikeRepository: Send + Sync {
     async fn get_user_likes(
         &self,
         user_id: Uuid,
-        content_type: Option<&ContentType>,
+        content_type: Option<ContentType>,
     ) -> Result<Vec<LikeRecord>, RepoError>;
 
     /// Retrieves like counts for multiple content items in a single batch operation.
@@ -62,7 +63,7 @@ pub trait LikeRepository: Send + Sync {
     /// Retrieves the top liked content items, optionally filtered by content type and time range.
     async fn get_top_liked(
         &self,
-        content_type: Option<&ContentType>,
+        content_type: Option<ContentType>,
         since: Option<DateTime<Utc>>,
         limit: i64,
     ) -> Result<Vec<(ContentType, Uuid, i64)>, RepoError>;
@@ -91,7 +92,7 @@ impl LikeRepository for PgLikeRepository {
     async fn insert_like(
         &self,
         user_id: Uuid,
-        content_type: &ContentType,
+        content_type: ContentType,
         content_id: Uuid,
     ) -> Result<(bool, i64, DateTime<Utc>), RepoError> {
         let mut tx = self.writer_pool.begin().await?;
@@ -167,7 +168,7 @@ impl LikeRepository for PgLikeRepository {
     async fn delete_like(
         &self,
         user_id: Uuid,
-        content_type: &ContentType,
+        content_type: ContentType,
         content_id: Uuid,
     ) -> Result<(bool, i64), RepoError> {
         let mut tx = self.writer_pool.begin().await?;
@@ -225,7 +226,7 @@ impl LikeRepository for PgLikeRepository {
 
     async fn get_count(
         &self,
-        content_type: &ContentType,
+        content_type: ContentType,
         content_id: Uuid,
     ) -> Result<i64, RepoError> {
         let count = sqlx::query_scalar!(
@@ -247,7 +248,7 @@ impl LikeRepository for PgLikeRepository {
     async fn get_status(
         &self,
         user_id: Uuid,
-        content_type: &ContentType,
+        content_type: ContentType,
         content_id: Uuid,
     ) -> Result<Option<DateTime<Utc>>, RepoError> {
         let created_at = sqlx::query_scalar!(
@@ -270,9 +271,9 @@ impl LikeRepository for PgLikeRepository {
     async fn get_user_likes(
         &self,
         user_id: Uuid,
-        content_type: Option<&ContentType>,
+        content_type: Option<ContentType>,
     ) -> Result<Vec<LikeRecord>, RepoError> {
-        let content_type_filter: Option<&str> = content_type.map(|ct| ct.0.as_ref());
+        let content_type_filter: Option<&str> = content_type.as_ref().map(|ct| ct.0.as_ref());
 
         let rows = sqlx::query!(
             r#"
@@ -365,11 +366,11 @@ impl LikeRepository for PgLikeRepository {
 
     async fn get_top_liked(
         &self,
-        content_type: Option<&ContentType>,
+        content_type: Option<ContentType>,
         since: Option<DateTime<Utc>>,
         limit: i64,
     ) -> Result<Vec<(ContentType, Uuid, i64)>, RepoError> {
-        let content_type_filter: Option<&str> = content_type.map(|ct| ct.0.as_ref());
+        let content_type_filter: Option<&str> = content_type.as_ref().map(|ct| ct.0.as_ref());
 
         // If a time window is specified, we need to query the likes table directly to filter by created_at. If no time window is specified, we can query the like_counts table which is optimized for all-time counts.
         if let Some(since_date) = since {
@@ -507,10 +508,14 @@ mod tests {
         let content_type = content_type("post");
         let content_id = Uuid::new_v4();
 
-        let (already_existed_1, count_1, _) =
-            repo.insert_like(user_id, &content_type, content_id).await.expect("first insert");
-        let (already_existed_2, count_2, _) =
-            repo.insert_like(user_id, &content_type, content_id).await.expect("second insert");
+        let (already_existed_1, count_1, _) = repo
+            .insert_like(user_id, content_type.clone(), content_id)
+            .await
+            .expect("first insert");
+        let (already_existed_2, count_2, _) = repo
+            .insert_like(user_id, content_type.clone(), content_id)
+            .await
+            .expect("second insert");
 
         assert!(!already_existed_1);
         assert_eq!(count_1, 1);
@@ -529,12 +534,12 @@ mod tests {
         let ct = content_type("bonus_hunter");
         let content_id = Uuid::new_v4();
 
-        repo.insert_like(user_id, &ct, content_id).await.expect("seed insert");
+        repo.insert_like(user_id, ct.clone(), content_id).await.expect("seed insert");
 
         let (was_liked_1, count_1) =
-            repo.delete_like(user_id, &ct, content_id).await.expect("first delete");
+            repo.delete_like(user_id, ct.clone(), content_id).await.expect("first delete");
         let (was_liked_2, count_2) =
-            repo.delete_like(user_id, &ct, content_id).await.expect("second delete");
+            repo.delete_like(user_id, ct.clone(), content_id).await.expect("second delete");
 
         assert!(was_liked_1);
         assert_eq!(count_1, 0);
@@ -550,7 +555,7 @@ mod tests {
         let repo = ctx.repo.clone();
 
         let count =
-            repo.get_count(&content_type("top_picks"), Uuid::new_v4()).await.expect("get count");
+            repo.get_count(content_type("top_picks"), Uuid::new_v4()).await.expect("get count");
         assert_eq!(count, 0);
 
         teardown_test_context(ctx).await;
@@ -566,7 +571,7 @@ mod tests {
         let id2 = Uuid::new_v4();
 
         let user_id = Uuid::new_v4();
-        repo.insert_like(user_id, &ct, id1).await.expect("seed insert");
+        repo.insert_like(user_id, ct.clone(), id1).await.expect("seed insert");
 
         let counts = repo
             .batch_get_counts(&[(ct.clone(), id2), (ct.clone(), id1)])
@@ -588,7 +593,7 @@ mod tests {
         let liked_id = Uuid::new_v4();
         let unliked_id = Uuid::new_v4();
 
-        repo.insert_like(user_id, &ct, liked_id).await.expect("seed insert");
+        repo.insert_like(user_id, ct.clone(), liked_id).await.expect("seed insert");
 
         let statuses = repo
             .batch_get_statuses(user_id, &[(ct.clone(), liked_id), (ct.clone(), unliked_id)])

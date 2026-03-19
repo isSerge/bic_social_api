@@ -44,3 +44,6 @@ path = "src/bin/mock_profile_api.rs"
 [[bin]]
 name = "mock_content_api"
 path = "src/bin/mock_content_api.rs"
+
+[dev-dependencies]
+mockall = "0.14.0"

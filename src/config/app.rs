@@ -10,9 +10,7 @@ pub struct AppConfig {
     pub read_database_url: String,
     pub redis_url: String,
     pub http_port: u16,
-    pub content_api_post_url: String,
-    pub content_api_bonus_hunter_url: String,
-    pub content_api_top_picks_url: String,
+    pub content_api_url: String,
     pub profile_api_url: String,
 
     // ── Optional (defaults provided below) ───────────────────────────────────
@@ -152,9 +150,7 @@ mod tests {
             env::remove_var("READ_DATABASE_URL");
             env::remove_var("REDIS_URL");
             env::remove_var("HTTP_PORT");
-            env::remove_var("CONTENT_API_POST_URL");
-            env::remove_var("CONTENT_API_BONUS_HUNTER_URL");
-            env::remove_var("CONTENT_API_TOP_PICKS_URL");
+            env::remove_var("CONTENT_API_URL");
             env::remove_var("PROFILE_API_URL");
             env::remove_var("LOG_LEVEL");
             env::remove_var("RUST_LOG");
@@ -179,9 +175,7 @@ mod tests {
             env::set_var("READ_DATABASE_URL", "postgres://localhost/db_read");
             env::set_var("REDIS_URL", "redis://localhost");
             env::set_var("HTTP_PORT", "8080");
-            env::set_var("CONTENT_API_POST_URL", "http://localhost/post");
-            env::set_var("CONTENT_API_BONUS_HUNTER_URL", "http://localhost/bonus");
-            env::set_var("CONTENT_API_TOP_PICKS_URL", "http://localhost/top");
+            env::set_var("CONTENT_API_URL", "http://localhost/content");
             env::set_var("PROFILE_API_URL", "http://localhost/profile");
         }
 
@@ -201,9 +195,7 @@ mod tests {
             env::set_var("READ_DATABASE_URL", "postgres://localhost/db_read");
             env::set_var("REDIS_URL", "redis://localhost");
             env::set_var("HTTP_PORT", "9090");
-            env::set_var("CONTENT_API_POST_URL", "http://localhost/post");
-            env::set_var("CONTENT_API_BONUS_HUNTER_URL", "http://localhost/bonus");
-            env::set_var("CONTENT_API_TOP_PICKS_URL", "http://localhost/top");
+            env::set_var("CONTENT_API_URL", "http://localhost/content");
             env::set_var("PROFILE_API_URL", "http://localhost/profile");
 
             env::set_var("LOG_LEVEL", "debug");

@@ -1,5 +1,3 @@
-
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -57,10 +55,7 @@ mod tests {
         let _guard = ENV_TEST_LOCK.lock().expect("env lock poisoned");
 
         unsafe {
-            std::env::set_var(
-                "CONTENT_API_REGISTRY_TEST_POST_URL",
-                "http://post-service:8081",
-            );
+            std::env::set_var("CONTENT_API_REGISTRY_TEST_POST_URL", "http://post-service:8081");
             std::env::set_var(
                 "CONTENT_API_REGISTRY_TEST_NEWS_ARTICLE_URL",
                 "http://news-service:8082",
@@ -91,9 +86,7 @@ mod tests {
         urls.insert("bonus_hunter".to_string(), "http://bonus:8080".to_string());
         let registry = ContentTypeRegistry { base_urls: urls };
 
-        let ct = registry
-            .validate("BoNuS_HuNtEr")
-            .expect("mixed case input should validate");
+        let ct = registry.validate("BoNuS_HuNtEr").expect("mixed case input should validate");
 
         assert_eq!(ct.0.as_ref(), "bonus_hunter");
         assert_eq!(registry.get_url(&ct), "http://bonus:8080");
@@ -101,13 +94,10 @@ mod tests {
 
     #[test]
     fn validate_rejects_unknown_content_type() {
-        let registry = ContentTypeRegistry {
-            base_urls: HashMap::new(),
-        };
+        let registry = ContentTypeRegistry { base_urls: HashMap::new() };
 
-        let err = registry
-            .validate("does_not_exist")
-            .expect_err("unknown content type must be rejected");
+        let err =
+            registry.validate("does_not_exist").expect_err("unknown content type must be rejected");
 
         assert!(err.to_string().contains("Invalid content type"));
     }

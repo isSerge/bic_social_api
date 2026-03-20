@@ -50,11 +50,24 @@ impl IntoResponse for ApiError {
                 (StatusCode::NOT_FOUND, "CONTENT_NOT_FOUND", self.to_string())
             }
 
-            // TODO: add more Domain layer mappings
+            // TODO: double check if these belong to domain
+            // Domain layer mappings
             ApiError::Domain(DomainError::ContentNotFound { content_type, content_id }) => (
                 StatusCode::NOT_FOUND,
                 "CONTENT_NOT_FOUND",
                 format!("Content item {} of type {} does not exist", content_id, content_type),
+            ),
+
+            ApiError::Domain(DomainError::InvalidTimeWindow(window)) => (
+                StatusCode::BAD_REQUEST,
+                "INVALID_TIME_WINDOW",
+                format!("Invalid time window parameter: {}", window),
+            ),
+
+            ApiError::Domain(DomainError::BatchTooLarge { size, max }) => (
+                StatusCode::BAD_REQUEST,
+                "BATCH_TOO_LARGE",
+                format!("Batch size {} exceeds maximum of {}", size, max),
             ),
 
             ApiError::Domain(DomainError::Repository(_)) => {

@@ -1,8 +1,6 @@
-use std::os::macos::raw::stat;
-
 use axum::{
     Extension, Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -220,9 +218,64 @@ pub async fn batch_statuses(
     Ok((StatusCode::OK, Json(serde_json::json!({ "results": results }))))
 }
 
+/// Top liked query parameters DTO
+#[derive(Deserialize)]
+pub struct TopLikedQuery {
+    content_type: Option<String>,
+    window: Option<String>,
+    limit: Option<i64>,
+}
+
+/// Top liked response DTO
+#[derive(Serialize)]
+pub struct TopLikedResponse {
+    window: String,
+    content_type: Option<String>,
+    items: Vec<BatchCountResult>, // Reuse same shape
+}
+
 /// GET /v1/likes/top
-pub async fn top_liked() -> impl IntoResponse {
-    StatusCode::NOT_IMPLEMENTED
+pub async fn top_liked(
+    State(state): State<AppState>,
+    Query(query): Query<TopLikedQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Validate time window parameter and convert to a timestamp cutoff
+    let window_str = query.window.unwrap_or_else(|| "all".to_string());
+
+    let since = match window_str.as_str() {
+        "24h" => Some(Utc::now() - chrono::Duration::hours(24)),
+        "7d" => Some(Utc::now() - chrono::Duration::days(7)),
+        "30d" => Some(Utc::now() - chrono::Duration::days(30)),
+        "all" => None,
+        _ => return Err(DomainError::InvalidTimeWindow(window_str).into()),
+    };
+
+    // Validate content type if provided
+    let content_type = match &query.content_type {
+        Some(raw) => Some(state.content_type_registry.validate(raw)?),
+        None => None,
+    };
+
+    // Validate and clamp limit parameter
+    let max = state.config.max_top_liked_limit as i64;
+    let limit = query.limit.unwrap_or(max).clamp(1, max);
+
+    // Fetch top liked content from the like service based on the provided filters
+    let top = state.like_service.get_top_liked(content_type, since, limit).await?;
+
+    // Transform the service results into the response DTO format
+    let items: Vec<BatchCountResult> = top
+        .into_iter()
+        .map(|(ct, id, count)| BatchCountResult {
+            content_type: ct.0.to_string(),
+            content_id: id,
+            count,
+        })
+        .collect();
+
+    let response = TopLikedResponse { window: window_str, content_type: query.content_type, items };
+
+    Ok((StatusCode::OK, Json(response)))
 }
 
 /// GET /v1/likes/stream

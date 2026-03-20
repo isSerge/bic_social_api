@@ -17,4 +17,7 @@ pub enum DomainError {
     /// Represents an error when a batch request exceeds the maximum allowed size.
     #[error("Batch request size {size} exceeds maximum allowed {max}")]
     BatchTooLarge { size: usize, max: usize },
+
+    #[error("Invalid time window specified: {0}")]
+    InvalidTimeWindow(String),
 }

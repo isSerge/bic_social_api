@@ -48,6 +48,14 @@ pub struct AppConfig {
     pub sse_heartbeat_interval_secs: u64,
     #[serde(default = "default_leaderboard_refresh_interval_secs")]
     pub leaderboard_refresh_interval_secs: u64,
+
+    /// Maximum number of content items allowed in batch requests (e.g. batch counts/statuses).
+    #[serde(default = "default_max_batch_pairs")]
+    pub max_batch_pairs: usize,
+
+    /// Maximum number of top liked items allowed in a single request.
+    #[serde(default = "default_max_top_liked_limit")]
+    pub max_top_liked_limit: usize,
 }
 
 impl AppConfig {
@@ -133,6 +141,14 @@ pub fn default_leaderboard_refresh_interval_secs() -> u64 {
     60
 }
 
+pub fn default_max_batch_pairs() -> usize {
+    100
+}
+
+pub fn default_max_top_liked_limit() -> usize {
+    50
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +185,8 @@ mod tests {
             env::remove_var("SHUTDOWN_TIMEOUT_SECS");
             env::remove_var("SSE_HEARTBEAT_INTERVAL_SECS");
             env::remove_var("LEADERBOARD_REFRESH_INTERVAL_SECS");
+            env::remove_var("MAX_BATCH_PAIRS");
+            env::remove_var("MAX_TOP_LIKED_LIMIT");
 
             // Set required variables
             env::set_var("DATABASE_URL", "postgres://localhost/db");

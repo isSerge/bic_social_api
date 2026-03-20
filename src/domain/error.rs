@@ -13,5 +13,8 @@ pub enum DomainError {
     /// Wraps repository layer errors that occur during like operations.
     #[error(transparent)]
     Repository(#[from] RepoError),
-    // TODO: add more domain-specific errors
+
+    /// Represents an error when a batch request exceeds the maximum allowed size.
+    #[error("Batch request size {size} exceeds maximum allowed {max}")]
+    BatchTooLarge { size: usize, max: usize },
 }

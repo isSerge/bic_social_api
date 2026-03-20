@@ -282,3 +282,312 @@ pub async fn top_liked(
 pub async fn sse_stream() -> impl IntoResponse {
     StatusCode::NOT_IMPLEMENTED
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use axum::{
+        Router,
+        body::Body,
+        http::{self, Request},
+        routing::{delete, get, post},
+    };
+    use tower::ServiceExt;
+
+    use crate::{
+        clients::profile::ProfileClient,
+        config::{AppConfig, ContentTypeRegistry},
+        http::AppState,
+        like_service::LikeService,
+        repository::like_repo::MockLikeRepository,
+    };
+
+    // --- Helper: Setup Test App ---
+    fn app_for_test(mock_repo: MockLikeRepository, test_user_id: Uuid) -> Router {
+        // Use a dummy config and a manually seeded registry to prevent flaky env-var tests
+        let config = Arc::new(AppConfig::default());
+        let registry = Arc::new(ContentTypeRegistry::default());
+        let like_service = Arc::new(LikeService::new(Arc::new(mock_repo)));
+        let profile_client =
+            Arc::new(ProfileClient::new(reqwest::Client::new(), "http://mock-profile"));
+
+        let state =
+            AppState { config, content_type_registry: registry, like_service, profile_client };
+
+        Router::new()
+            .route("/v1/likes", post(like))
+            .route("/v1/likes/{content_type}/{content_id}", delete(unlike))
+            .route("/v1/likes/{content_type}/{content_id}/count", get(get_count))
+            .route("/v1/likes/{content_type}/{content_id}/status", get(get_status))
+            .route("/v1/likes/user", get(get_user_likes))
+            .route("/v1/likes/batch/counts", post(batch_counts))
+            .route("/v1/likes/batch/statuses", post(batch_statuses))
+            .route("/v1/likes/top", get(top_liked))
+            .with_state(state)
+            .layer(Extension(test_user_id))
+    }
+
+    // Helper to parse JSON responses in tests
+    async fn parse_json<T: serde::de::DeserializeOwned>(response: axum::response::Response) -> T {
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("Failed to read response body");
+
+        serde_json::from_slice(&body_bytes).expect("Failed to parse JSON")
+    }
+
+    #[tokio::test]
+    async fn test_like_handler_success() {
+        let test_user_id = Uuid::new_v4();
+        let content_id = Uuid::new_v4();
+        let timestamp = Utc::now();
+
+        // Simulate a new like with count 42
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo
+            .expect_insert_like()
+            .times(1)
+            .returning(move |_, _, _| Ok((false, 42, timestamp)));
+
+        let app = app_for_test(mock_repo, test_user_id);
+        let payload = serde_json::json!({ "content_type": "post", "content_id": content_id });
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/v1/likes")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_string(&payload).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let body: serde_json::Value = parse_json(response).await;
+        assert_eq!(body["liked"], true);
+        assert_eq!(body["already_existed"], false);
+        assert_eq!(body["count"], 42);
+    }
+
+    #[tokio::test]
+    async fn test_like_handler_returns_400_for_unknown_content_type() {
+        let test_user_id = Uuid::new_v4();
+        let content_id = Uuid::new_v4();
+
+        // Repo should not be called
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo.expect_insert_like().times(0);
+
+        let app = app_for_test(mock_repo, test_user_id);
+
+        let payload = serde_json::json!({
+            "content_type": "invalid_type",
+            "content_id": content_id
+        });
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/v1/likes")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_string(&payload).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        // Assert HTTP Status mapped correctly by `error.rs`
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        // Assert specific JSON error structure from Assignment Spec
+        let body: serde_json::Value = parse_json(response).await;
+        assert_eq!(body["error"]["code"], "CONTENT_TYPE_UNKNOWN");
+    }
+
+    #[tokio::test]
+    async fn test_unlike_handler_success() {
+        let test_user_id = Uuid::new_v4();
+        let content_id = Uuid::new_v4();
+
+        // Simulate a content item that was previously liked and now has 41 likes after unliking
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo.expect_delete_like().times(1).returning(|_, _, _| Ok((true, 41)));
+
+        let app = app_for_test(mock_repo, test_user_id);
+        let request = Request::builder()
+            .method(http::Method::DELETE)
+            .uri(format!("/v1/likes/post/{}", content_id))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body: serde_json::Value = parse_json(response).await;
+        assert_eq!(body["liked"], false);
+        assert_eq!(body["was_liked"], true);
+        assert_eq!(body["count"], 41);
+    }
+
+    #[tokio::test]
+    async fn test_get_count_handler_success() {
+        let test_user_id = Uuid::new_v4();
+        let content_id = Uuid::new_v4();
+
+        // Simulate a content item with 150 likes
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo.expect_get_count().times(1).returning(|_, _| Ok(150));
+
+        let app = app_for_test(mock_repo, test_user_id);
+
+        let request = Request::builder()
+            .method(http::Method::GET)
+            .uri(format!("/v1/likes/post/{}/count", content_id))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body: serde_json::Value = parse_json(response).await;
+        assert_eq!(body["content_type"], "post");
+        assert_eq!(body["content_id"], content_id.to_string());
+        assert_eq!(body["count"], 150);
+    }
+
+    #[tokio::test]
+    async fn test_get_status_handler_liked() {
+        let test_user_id = Uuid::new_v4();
+        let content_id = Uuid::new_v4();
+        let timestamp = Utc::now();
+
+        // Simulate a content item that the user has liked with a specific timestamp
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo.expect_get_status().times(1).returning(move |_, _, _| Ok(Some(timestamp)));
+
+        let app = app_for_test(mock_repo, test_user_id);
+        let request = Request::builder()
+            .method(http::Method::GET)
+            .uri(format!("/v1/likes/post/{}/status", content_id))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body: serde_json::Value = parse_json(response).await;
+        assert_eq!(body["liked"], true);
+        assert!(body["liked_at"].is_string());
+    }
+
+    // TODO: add test for get user likes handler with pagination once implemented
+
+    #[tokio::test]
+    async fn test_batch_counts_success() {
+        let test_user_id = Uuid::new_v4();
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+
+        // Simulate batch counts for two content items with counts 10 and 20 respectively
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo.expect_batch_get_counts().times(1).returning(|_| Ok(vec![10, 20]));
+
+        let app = app_for_test(mock_repo, test_user_id);
+        let payload = serde_json::json!({
+            "items": [
+                { "content_type": "post", "content_id": id1 },
+                { "content_type": "bonus_hunter", "content_id": id2 }
+            ]
+        });
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/v1/likes/batch/counts")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_string(&payload).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body: serde_json::Value = parse_json(response).await;
+        let results = body["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["count"], 10);
+        assert_eq!(results[1]["count"], 20);
+    }
+
+    #[tokio::test]
+    async fn test_batch_counts_enforces_100_item_limit() {
+        let test_user_id = Uuid::new_v4();
+
+        // Repo should not be called when batch size exceeds limit
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo.expect_batch_get_counts().times(0);
+
+        let app = app_for_test(mock_repo, test_user_id);
+
+        // Generate 101 items
+        let items: Vec<_> = (0..101)
+            .map(|_| serde_json::json!({ "content_type": "post", "content_id": Uuid::new_v4() }))
+            .collect();
+        let payload = serde_json::json!({ "items": items });
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/v1/likes/batch/counts")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_string(&payload).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body: serde_json::Value = parse_json(response).await;
+        assert_eq!(body["error"]["code"], "BATCH_TOO_LARGE");
+    }
+
+    #[tokio::test]
+    async fn test_top_liked_valid_window() {
+        let test_user_id = Uuid::new_v4();
+        let mut mock_repo = MockLikeRepository::new();
+
+        // Simulate top liked content with no specific content type and a 7-day window, returning an empty list for simplicity
+        mock_repo.expect_get_top_liked().times(1).returning(|_, _, _| Ok(vec![]));
+
+        let app = app_for_test(mock_repo, test_user_id);
+        let request = Request::builder()
+            .method(http::Method::GET)
+            .uri("/v1/likes/top?window=7d")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body: serde_json::Value = parse_json(response).await;
+        assert_eq!(body["window"], "7d");
+    }
+
+    #[tokio::test]
+    async fn test_top_liked_invalid_window() {
+        let test_user_id = Uuid::new_v4();
+
+        // Repo should not be called when window parameter is invalid
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo.expect_get_top_liked().times(0);
+
+        let app = app_for_test(mock_repo, test_user_id);
+        let request = Request::builder()
+            .method(http::Method::GET)
+            .uri("/v1/likes/top?window=5m") // invalid
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body: serde_json::Value = parse_json(response).await;
+        assert_eq!(body["error"]["code"], "INVALID_TIME_WINDOW");
+    }
+}

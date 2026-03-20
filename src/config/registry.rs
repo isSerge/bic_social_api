@@ -22,7 +22,11 @@ pub struct ContentTypeRegistry {
 #[cfg(test)]
 impl Default for ContentTypeRegistry {
     fn default() -> Self {
-        Self { base_urls: HashMap::new() }
+        let mut base_urls = HashMap::new();
+        base_urls.insert("post".to_string(), "http://mock".to_string());
+        base_urls.insert("bonus_hunter".to_string(), "http://mock".to_string());
+        base_urls.insert("top_picks".to_string(), "http://mock".to_string());
+        Self { base_urls }
     }
 }
 

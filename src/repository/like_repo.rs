@@ -1,4 +1,4 @@
-use crate::domain::{ContentType, LikeRecord};
+use crate::domain::{ContentType, LikeRecord, PaginationCursor};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
@@ -45,13 +45,14 @@ pub trait LikeRepository: Send + Sync {
         content_id: Uuid,
     ) -> Result<Option<DateTime<Utc>>, RepoError>;
 
-    // TODO: include cursor-based pagination for user likes retrieval
     /// Retrieves all likes for a specific user, optionally filtered by content type.
     /// Returns a list of LikeRecord objects representing the user's likes
     async fn get_user_likes(
         &self,
         user_id: Uuid,
         content_type: Option<ContentType>,
+        cursor: Option<PaginationCursor>,
+        limit: i64,
     ) -> Result<Vec<LikeRecord>, RepoError>;
 
     /// Retrieves like counts for multiple content items in a single batch operation.
@@ -272,13 +273,18 @@ impl LikeRepository for PgLikeRepository {
         Ok(created_at)
     }
 
-    // TODO: include cursor-based pagination for user likes retrieval
     async fn get_user_likes(
         &self,
         user_id: Uuid,
         content_type: Option<ContentType>,
+        cursor: Option<PaginationCursor>,
+        limit: i64,
     ) -> Result<Vec<LikeRecord>, RepoError> {
         let content_type_filter: Option<&str> = content_type.as_ref().map(|ct| ct.0.as_ref());
+
+        // Include cursor values in the query parameters if provided, otherwise pass NULL to ignore the cursor condition
+        let (cursor_created_at, cursor_id) =
+            if let Some(c) = cursor { (Some(c.created_at), Some(c.id)) } else { (None, None) };
 
         let rows = sqlx::query!(
             r#"
@@ -286,10 +292,15 @@ impl LikeRepository for PgLikeRepository {
             FROM likes
             WHERE user_id = $1
               AND ($2::text IS NULL OR content_type = $2)
+              AND ($3::timestamptz IS NULL OR (created_at, content_id) < ($3, $4))
             ORDER BY created_at DESC, content_id DESC
+            LIMIT $5
             "#,
             user_id,
             content_type_filter,
+            cursor_created_at,
+            cursor_id,
+            limit,
         )
         .fetch_all(&self.reader_pool)
         .await?;
@@ -608,6 +619,39 @@ mod tests {
         assert_eq!(statuses.len(), 2);
         assert!(statuses[0].is_some());
         assert!(statuses[1].is_none());
+
+        teardown_test_context(ctx).await;
+    }
+
+    #[tokio::test]
+    async fn get_user_likes_returns_paginated_results() {
+        let ctx = setup_test_context().await;
+        let repo = ctx.repo.clone();
+
+        let user_id = Uuid::new_v4();
+        let ct = content_type("post");
+
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let id3 = Uuid::new_v4();
+
+        repo.insert_like(user_id, ct.clone(), id1).await.expect("seed insert 1");
+        repo.insert_like(user_id, ct.clone(), id2).await.expect("seed insert 2");
+        repo.insert_like(user_id, ct.clone(), id3).await.expect("seed insert 3");
+
+        let page_1 = repo.get_user_likes(user_id, Some(ct.clone()), None, 2).await.expect("page 1");
+
+        assert_eq!(page_1.len(), 2);
+        assert!(page_1[0].created_at >= page_1[1].created_at);
+
+        let cursor =
+            PaginationCursor { created_at: page_1[1].created_at, id: page_1[1].content_id };
+
+        let page_2 = repo.get_user_likes(user_id, Some(ct), Some(cursor), 2).await.expect("page 2");
+
+        assert_eq!(page_2.len(), 1);
+        assert_ne!(page_2[0].content_id, page_1[0].content_id);
+        assert_ne!(page_2[0].content_id, page_1[1].content_id);
 
         teardown_test_context(ctx).await;
     }

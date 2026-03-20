@@ -2,7 +2,7 @@ mod error;
 mod like;
 
 pub use error::DomainError;
-pub use like::LikeRecord;
+pub use like::{LikeRecord, PaginationCursor};
 
 use std::sync::Arc;
 

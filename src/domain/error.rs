@@ -18,6 +18,11 @@ pub enum DomainError {
     #[error("Batch request size {size} exceeds maximum allowed {max}")]
     BatchTooLarge { size: usize, max: usize },
 
+    /// Represents an error when an invalid time window parameter is provided.
     #[error("Invalid time window specified: {0}")]
     InvalidTimeWindow(String),
+
+    /// Represents an error when a pagination cursor is invalid or cannot be decoded.
+    #[error("Invalid pagination cursor: {0}")]
+    InvalidCursor(String),
 }

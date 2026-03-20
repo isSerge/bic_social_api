@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    domain::DomainError,
+    domain::{DomainError, PaginationCursor},
     http::{AppState, error::ApiError},
 };
 
@@ -112,9 +112,77 @@ pub async fn get_status(
     Ok((StatusCode::OK, Json(response)))
 }
 
+/// User likes query parameters DTO
+#[derive(Deserialize)]
+pub struct UserLikesQuery {
+    content_type: Option<String>,
+    cursor: Option<String>,
+    limit: Option<i64>,
+}
+
+/// User likes item DTO
+#[derive(Serialize)]
+pub struct UserLikesItem {
+    content_type: String,
+    content_id: Uuid,
+    liked_at: DateTime<Utc>,
+}
+
+/// User likes response DTO
+#[derive(Serialize)]
+pub struct UserLikesResponse {
+    items: Vec<UserLikesItem>,
+    next_cursor: Option<String>,
+    has_more: bool,
+}
+
 /// GET /v1/likes/user
-pub async fn get_user_likes() -> impl IntoResponse {
-    StatusCode::NOT_IMPLEMENTED
+pub async fn get_user_likes(
+    State(state): State<AppState>,
+    Extension(user_id): Extension<Uuid>,
+    Query(query): Query<UserLikesQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Validate content type if provided
+    let content_type = match &query.content_type {
+        Some(raw) => Some(state.content_type_registry.validate(raw)?),
+        None => None,
+    };
+
+    // Validate and parse cursor if provided
+    let cursor = query.cursor.as_deref().map(PaginationCursor::try_from).transpose()?;
+
+    // Validate and clamp limit parameter
+    // TODO: add max limit to config and use it here
+    let limit = query.limit.unwrap_or(20).clamp(1, 100);
+
+    // Fetch user likes from the like service with pagination parameters
+    let mut records =
+        state.like_service.get_user_likes(user_id, content_type.clone(), cursor, limit + 1).await?;
+
+    // Determine if there are more records for pagination and prepare the next cursor if needed
+    let has_more = records.len() as i64 > limit;
+    if has_more {
+        records.pop();
+    }
+
+    // Prepare the next cursor based on the last record in the current page, if it exists
+    let next_cursor = records.last().map(|last| {
+        String::from(&PaginationCursor { created_at: last.created_at, id: last.content_id })
+    });
+
+    // Transform the like records into the response DTO format
+    let items: Vec<UserLikesItem> = records
+        .into_iter()
+        .map(|r| UserLikesItem {
+            content_type: r.content_type.0.to_string(),
+            content_id: r.content_id,
+            liked_at: r.created_at,
+        })
+        .collect();
+
+    let response = UserLikesResponse { items, next_cursor, has_more };
+
+    Ok((StatusCode::OK, Json(response)))
 }
 
 /// Batch request DTO
@@ -294,11 +362,14 @@ mod tests {
         http::{self, Request},
         routing::{delete, get, post},
     };
+    use chrono::TimeZone;
+    use mockall::predicate::eq;
     use tower::ServiceExt;
 
     use crate::{
         clients::profile::ProfileClient,
         config::{AppConfig, ContentTypeRegistry},
+        domain::{ContentType, LikeRecord},
         http::AppState,
         like_service::LikeService,
         repository::like_repo::MockLikeRepository,
@@ -480,8 +551,6 @@ mod tests {
         assert!(body["liked_at"].is_string());
     }
 
-    // TODO: add test for get user likes handler with pagination once implemented
-
     #[tokio::test]
     async fn test_batch_counts_success() {
         let test_user_id = Uuid::new_v4();
@@ -589,5 +658,137 @@ mod tests {
 
         let body: serde_json::Value = parse_json(response).await;
         assert_eq!(body["error"]["code"], "INVALID_TIME_WINDOW");
+    }
+
+    // TODO: move it somewhere common
+    // Helper to create a dummy ContentType
+    fn content_type(raw: &str) -> ContentType {
+        ContentType(Arc::from(raw.to_string()))
+    }
+
+    #[tokio::test]
+    async fn test_get_user_likes_pagination_has_more() {
+        let test_user_id = Uuid::new_v4();
+        let ct = content_type("post");
+        let ts1 = Utc.with_ymd_and_hms(2026, 2, 2, 17, 0, 0).unwrap();
+        let ts2 = Utc.with_ymd_and_hms(2026, 2, 2, 16, 0, 0).unwrap();
+        let ts3 = Utc.with_ymd_and_hms(2026, 2, 2, 15, 0, 0).unwrap();
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let id3 = Uuid::new_v4();
+
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo
+            .expect_get_user_likes()
+            // We request limit=2, so the service asks the repo for 3 (limit + 1)
+            .with(eq(test_user_id), eq(None), eq(None), eq(3))
+            .times(1)
+            .returning(move |_, _, _, _| {
+                Ok(vec![
+                    LikeRecord {
+                        user_id: test_user_id,
+                        content_type: ct.clone(),
+                        content_id: id1,
+                        created_at: ts1,
+                    },
+                    LikeRecord {
+                        user_id: test_user_id,
+                        content_type: ct.clone(),
+                        content_id: id2,
+                        created_at: ts2,
+                    },
+                    LikeRecord {
+                        user_id: test_user_id,
+                        content_type: ct.clone(),
+                        content_id: id3,
+                        created_at: ts3,
+                    },
+                ])
+            });
+
+        let app = app_for_test(mock_repo, test_user_id);
+
+        let request = Request::builder()
+            .method(http::Method::GET)
+            .uri("/v1/likes/user?limit=2")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body: serde_json::Value = parse_json(response).await;
+        let items = body["items"].as_array().unwrap();
+
+        // Assert it returns only 2 items
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["content_id"], id1.to_string());
+        assert_eq!(items[1]["content_id"], id2.to_string());
+
+        // Assert pagination metadata
+        assert_eq!(body["has_more"], true);
+        assert!(body["next_cursor"].is_string());
+
+        // Verify the generated cursor actually decodes back to the last item (id2)
+        let cursor_str = body["next_cursor"].as_str().unwrap();
+        let decoded_cursor = PaginationCursor::try_from(cursor_str).expect("Valid base64 cursor");
+        assert_eq!(decoded_cursor.id, id2);
+        assert_eq!(decoded_cursor.created_at, ts2);
+    }
+
+    #[tokio::test]
+    async fn test_get_user_likes_invalid_cursor_returns_400() {
+        let test_user_id = Uuid::new_v4();
+
+        // Should not call the repo if the cursor is invalid
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo.expect_get_user_likes().times(0);
+
+        let app = app_for_test(mock_repo, test_user_id);
+
+        let request = Request::builder()
+            .method(http::Method::GET)
+            .uri("/v1/likes/user?cursor=this_is_not_base64_json")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body: serde_json::Value = parse_json(response).await;
+        assert_eq!(body["error"]["code"], "INVALID_CURSOR");
+    }
+
+    #[tokio::test]
+    async fn test_get_user_likes_with_content_type_filter() {
+        let test_user_id = Uuid::new_v4();
+        let filter_ct = content_type("bonus_hunter");
+
+        // Simulate a request with content_type filter and verify that the service correctly passes it down to the repo
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo
+            .expect_get_user_likes()
+            .with(eq(test_user_id), eq(Some(filter_ct)), eq(None), eq(21)) // default limit 20 + 1
+            .times(1)
+            .returning(|_, _, _, _| Ok(vec![])); // Return empty for simplicity
+
+        let app = app_for_test(mock_repo, test_user_id);
+
+        let request = Request::builder()
+            .method(http::Method::GET)
+            .uri("/v1/likes/user?content_type=bonus_hunter")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body: serde_json::Value = parse_json(response).await;
+        let items = body["items"].as_array().unwrap();
+
+        assert_eq!(items.len(), 0);
+        assert_eq!(body["has_more"], false);
+        assert!(body["next_cursor"].is_null());
     }
 }

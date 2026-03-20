@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::domain::{ContentType, DomainError, LikeRecord};
+use crate::domain::{ContentType, DomainError, LikeRecord, PaginationCursor};
 use crate::repository::like_repo::LikeRepository;
 
 /// Orchestrates authentication/content validation and like repository operations.
@@ -80,14 +80,15 @@ impl LikeService {
         Ok(status)
     }
 
-    // TODO: implement pagination
     /// Retrieves a list of content items that the authenticated user has liked, optionally filtered by content type.
     pub async fn get_user_likes(
         &self,
         user_id: Uuid,
         content_type: Option<ContentType>,
+        cursor: Option<PaginationCursor>,
+        limit: i64,
     ) -> Result<Vec<LikeRecord>, DomainError> {
-        let likes = self.repo.get_user_likes(user_id, content_type).await?;
+        let likes = self.repo.get_user_likes(user_id, content_type, cursor, limit).await?;
 
         Ok(likes)
     }
@@ -362,5 +363,33 @@ mod tests {
         assert_eq!(top.len(), 2);
         assert_eq!(top[0].2, 1500);
         assert_eq!(top[1].2, 900);
+    }
+
+    #[tokio::test]
+    async fn test_get_user_likes_with_cursor_and_filter() {
+        let user_id = Uuid::new_v4();
+        let content_type = content_type("top_picks");
+        let limit = 20;
+        let ts = Utc.with_ymd_and_hms(2026, 2, 2, 17, 0, 0).unwrap();
+        let cursor_id = Uuid::new_v4();
+        let cursor = PaginationCursor { created_at: ts, id: cursor_id };
+
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo
+            .expect_get_user_likes()
+            // Verify the service passes down the optional values correctly
+            .with(
+                eq(user_id),
+                eq(Some(content_type.clone())),
+                eq(Some(PaginationCursor { created_at: ts, id: cursor_id })),
+                eq(limit),
+            )
+            .times(1)
+            .returning(|_, _, _, _| Ok(vec![])); // Empty vec is fine for this assertion
+
+        let service = LikeService::new(Arc::new(mock_repo));
+        let result = service.get_user_likes(user_id, Some(content_type), Some(cursor), limit).await;
+
+        assert!(result.is_ok());
     }
 }

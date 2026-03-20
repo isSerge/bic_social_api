@@ -79,6 +79,12 @@ impl IntoResponse for ApiError {
                 )
             }
 
+            ApiError::Domain(DomainError::InvalidCursor(cursor)) => (
+                StatusCode::BAD_REQUEST,
+                "INVALID_CURSOR",
+                format!("Invalid pagination cursor: {}", cursor),
+            ),
+
             // Client layer mappings
             ApiError::Client(ClientError::DependencyUnavailable(_)) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE", self.to_string())

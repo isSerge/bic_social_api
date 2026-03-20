@@ -1,10 +1,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use thiserror::Error;
+
 use crate::domain::ContentType;
 
-// TODO: think about better error
-type Error = Box<dyn std::error::Error + Send + Sync>;
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ContentTypeRegistryError {
+    #[error("Unknown content type: {0}")]
+    UnknownContentType(String),
+}
 
 /// Registry for content types and their associated base URLs, loaded from environment variables at startup.
 #[derive(Debug, Clone)]
@@ -28,12 +33,12 @@ impl ContentTypeRegistry {
     }
 
     /// Converts a raw string from an HTTP path into a validated Domain type
-    pub fn validate(&self, raw: &str) -> Result<ContentType, Error> {
+    pub fn validate(&self, raw: &str) -> Result<ContentType, ContentTypeRegistryError> {
         let normalized = raw.to_lowercase();
         if self.base_urls.contains_key(&normalized) {
             Ok(ContentType(Arc::from(normalized)))
         } else {
-            Err(format!("Invalid content type: {}", raw).into())
+            Err(ContentTypeRegistryError::UnknownContentType(raw.to_string()))
         }
     }
 
@@ -99,7 +104,7 @@ mod tests {
         let err =
             registry.validate("does_not_exist").expect_err("unknown content type must be rejected");
 
-        assert!(err.to_string().contains("Invalid content type"));
+        assert_eq!(err, ContentTypeRegistryError::UnknownContentType("does_not_exist".to_string()));
     }
 
     #[test]

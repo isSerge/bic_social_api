@@ -1,4 +1,4 @@
-mod auth;
+pub mod auth;
 mod rate_limit;
 mod request_id;
 

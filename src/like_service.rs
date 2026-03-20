@@ -7,13 +7,13 @@ use crate::domain::{ContentType, DomainError, LikeRecord};
 use crate::repository::like_repo::LikeRepository;
 
 /// Orchestrates authentication/content validation and like repository operations.
-pub struct LikeService<R: LikeRepository> {
-    repo: Arc<R>,
+pub struct LikeService {
+    repo: Arc<dyn LikeRepository>,
     // TODO: include cache, clients and broadcaster
 }
 
-impl<R: LikeRepository> LikeService<R> {
-    pub fn new(repo: Arc<R>) -> Self {
+impl LikeService {
+    pub fn new(repo: Arc<dyn LikeRepository>) -> Self {
         Self { repo }
     }
 
@@ -154,11 +154,7 @@ mod tests {
 
         mock_repo
             .expect_insert_like()
-            .with(
-                eq(user_id),
-                eq(ct.clone()),
-                eq(content_id),
-            )
+            .with(eq(user_id), eq(ct.clone()), eq(content_id))
             .times(1)
             .returning(move |_, _, _| Ok((false, 42, expected_time))); // Returns: (already_existed, count, timestamp)
 
@@ -197,7 +193,10 @@ mod tests {
 
         // Assert
         assert!(result.is_err());
-        assert!(matches!(result.err().unwrap(), DomainError::Repository(RepoError::Db(SqlxError::RowNotFound))));
+        assert!(matches!(
+            result.err().unwrap(),
+            DomainError::Repository(RepoError::Db(SqlxError::RowNotFound))
+        ));
     }
 
     #[tokio::test]
@@ -211,11 +210,7 @@ mod tests {
 
         mock_repo
             .expect_delete_like()
-            .with(
-                eq(user_id),
-                eq(ct.clone()),
-                eq(content_id),
-            )
+            .with(eq(user_id), eq(ct.clone()), eq(content_id))
             .times(1)
             .returning(|_, _, _| Ok((true, 41))); // Returns: (was_liked, new_count)
 
@@ -352,10 +347,9 @@ mod tests {
             .expect_get_top_liked()
             .with(eq(Some(content_type.clone())), eq(Some(since)), eq(limit))
             .times(1)
-            .returning(move |_, _, _| Ok(vec![
-                (ct_clone1.clone(), id1, 1500),
-                (ct_clone2.clone(), id2, 900),
-            ]));
+            .returning(move |_, _, _| {
+                Ok(vec![(ct_clone1.clone(), id1, 1500), (ct_clone2.clone(), id2, 900)])
+            });
 
         let service = LikeService::new(Arc::new(mock_repo));
 

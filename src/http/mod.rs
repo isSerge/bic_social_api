@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crate::{
+    clients::profile::ProfileClient,
     config::{AppConfig, ContentTypeRegistry},
     like_service::LikeService,
-    repository::like_repo::PgLikeRepository,
 };
 
 pub mod error;
@@ -19,5 +19,7 @@ pub struct AppState {
     /// Registry for content types and their associated base URLs.
     pub content_type_registry: Arc<ContentTypeRegistry>,
     /// Service for managing likes, backed by a PostgreSQL repository.
-    pub like_service: Arc<LikeService<PgLikeRepository>>,
+    pub like_service: Arc<LikeService>,
+    /// Profile API client for validating user tokens
+    pub profile_client: Arc<ProfileClient>,
 }

@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("Failed to initialize database pools");
 
     // Create Like Repository, and Like Service
-    let like_repo = PgLikeRepository::new(writer_pool, reader_pool);
+    let like_repo = PgLikeRepository::new(writer_pool.clone(), reader_pool.clone()); // Cloning is cheap for PgPool
     let like_service = LikeService::new(Arc::new(like_repo));
 
     // Create shared application state
@@ -61,7 +61,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: Arc::clone(&config),
         content_type_registry: Arc::new(content_type_registry),
         like_service: Arc::new(like_service),
-        // TODO: add clients and repos
     };
 
     // Create the HTTP router with the application state
@@ -88,6 +87,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         tracing::info!(service = "social-api", "Server drained cleanly.");
     }
+
+    // Close database connections
+    tracing::info!(service = "social-api", "Closing database connections...");
+    writer_pool.close().await;
+    reader_pool.close().await;
 
     tracing::info!(service = "social-api", "Shutdown complete");
 

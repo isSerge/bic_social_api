@@ -18,6 +18,14 @@ pub struct ContentTypeRegistry {
     base_urls: HashMap<String, String>,
 }
 
+// Default impl for testing purposes only, real registry should always be created from env vars
+#[cfg(test)]
+impl Default for ContentTypeRegistry {
+    fn default() -> Self {
+        Self { base_urls: HashMap::new() }
+    }
+}
+
 impl ContentTypeRegistry {
     /// Scans env vars for CONTENT_API_*_URL at startup
     pub fn from_env() -> Self {

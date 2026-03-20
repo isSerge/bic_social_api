@@ -15,6 +15,7 @@ use tokio::{net::TcpListener, signal};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
+    clients::profile::ProfileClient,
     config::{AppConfig, ContentTypeRegistry},
     http::AppState,
     like_service::LikeService,
@@ -56,11 +57,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let like_repo = PgLikeRepository::new(writer_pool.clone(), reader_pool.clone()); // Cloning is cheap for PgPool
     let like_service = LikeService::new(Arc::new(like_repo));
 
+    // Initialize HTTP client and Profile API client
+    let http_client = reqwest::Client::new();
+    let profile_client = ProfileClient::new(http_client.clone(), config.profile_api_url.clone());
+
     // Create shared application state
     let state = AppState {
         config: Arc::clone(&config),
         content_type_registry: Arc::new(content_type_registry),
         like_service: Arc::new(like_service),
+        profile_client: Arc::new(profile_client),
     };
 
     // Create the HTTP router with the application state

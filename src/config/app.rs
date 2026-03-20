@@ -73,6 +73,40 @@ impl AppConfig {
     }
 }
 
+// Default impl for testing purposes only, real config should always be created from env vars
+#[cfg(test)]
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            database_url: "postgres://localhost:5432/social_api".to_string(),
+            read_database_url: "postgres://localhost:5432/social_api".to_string(),
+            redis_url: "redis://localhost:6379".to_string(),
+            http_port: 8080,
+            content_api_url: "http://localhost:8081".to_string(),
+            profile_api_url: "http://localhost:8082".to_string(),
+            log_level: default_log_level(),
+            rust_log: default_rust_log(),
+            db_max_connections: default_db_max_connections(),
+            db_min_connections: default_db_min_connections(),
+            db_acquire_timeout_secs: default_db_acquire_timeout_secs(),
+            redis_pool_size: default_redis_pool_size(),
+            rate_limit_write_per_minute: default_rate_limit_write_per_minute(),
+            rate_limit_read_per_minute: default_rate_limit_read_per_minute(),
+            cache_ttl_like_counts_secs: default_cache_ttl_like_counts_secs(),
+            cache_ttl_content_validation_secs: default_cache_ttl_content_validation_secs(),
+            cache_ttl_user_status_secs: default_cache_ttl_user_status_secs(),
+            circuit_breaker_failure_threshold: default_circuit_breaker_failure_threshold(),
+            circuit_breaker_recovery_timeout_secs: default_circuit_breaker_recovery_timeout_secs(),
+            circuit_breaker_success_threshold: default_circuit_breaker_success_threshold(),
+            shutdown_timeout_secs: default_shutdown_timeout_secs(),
+            sse_heartbeat_interval_secs: default_sse_heartbeat_interval_secs(),
+            leaderboard_refresh_interval_secs: default_leaderboard_refresh_interval_secs(),
+            max_batch_pairs: default_max_batch_pairs(),
+            max_top_liked_limit: default_max_top_liked_limit(),
+        }
+    }
+}
+
 pub fn default_log_level() -> String {
     "info".to_string()
 }

@@ -47,4 +47,5 @@ path = "src/bin/mock_content_api.rs"
 
 [dev-dependencies]
 mockall = "0.14.0"
+tower = "0.5.3"
 wiremock = "0.6.5"

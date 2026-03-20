@@ -213,7 +213,7 @@ mod tests {
             env::remove_var("CACHE_TTL_LIKE_COUNTS_SECS");
             env::remove_var("CACHE_TTL_CONTENT_VALIDATION_SECS");
             env::remove_var("CACHE_TTL_USER_STATUS_SECS");
-            env::remove_var("CIRCUIT_BREERER_FAILURE_THRESHOLD");
+            env::remove_var("CIRCUIT_BREAKER_FAILURE_THRESHOLD");
             env::remove_var("CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS");
             env::remove_var("CIRCUIT_BREAKER_SUCCESS_THRESHOLD");
             env::remove_var("SHUTDOWN_TIMEOUT_SECS");

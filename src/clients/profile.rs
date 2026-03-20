@@ -1,0 +1,154 @@
+use axum::http;
+use reqwest::StatusCode;
+use serde::Deserialize;
+use uuid::Uuid;
+
+use crate::clients::error::ClientError;
+
+/// Response structure for profile validation
+#[derive(Debug, Deserialize)]
+struct ProfileValidationResponse {
+    /// Indicates if the token is valid
+    valid: bool,
+    /// User ID associated with the token, if valid. Spec uses "usr_" prefix.
+    user_id: Option<String>,
+}
+
+/// Client for interacting with the Profile API, specifically for token validation.
+pub struct ProfileClient {
+    http_client: reqwest::Client,
+    base_url: String,
+}
+
+impl ProfileClient {
+    pub fn new(http_client: reqwest::Client, base_url: impl Into<String>) -> Self {
+        ProfileClient { http_client, base_url: base_url.into() }
+    }
+
+    /// Validates a token by calling the Profile API. Returns the associated user ID if valid.
+    pub async fn validate_token(&self, token: &str) -> Result<Uuid, ClientError> {
+        let url = format!("{}/v1/auth/validate", self.base_url.trim_end_matches("/"));
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header(http::header::AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await
+            .map_err(ClientError::Http)?;
+
+        match response.status() {
+            StatusCode::OK => {
+                let payload: ProfileValidationResponse =
+                    response.json().await.map_err(ClientError::Http)?;
+
+                if !payload.valid {
+                    return Err(ClientError::NotFound); // Map to 401 in the handler
+                }
+
+                let user_id_str = payload.user_id.ok_or(ClientError::NotFound)?; // Defensive check, should not happen if valid is true
+
+                // Normalize user ID by stripping "usr_" prefix if present, then parse as UUID
+                let normalized = user_id_str.strip_prefix("usr_").unwrap_or(&user_id_str);
+
+                Uuid::parse_str(normalized).map_err(|_| ClientError::NotFound)
+            }
+            StatusCode::UNAUTHORIZED => Err(ClientError::NotFound),
+            _ => Err(ClientError::DependencyUnavailable("Profile API".to_string())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn validate_token_success() {
+        let mock_server = MockServer::start().await;
+
+        let expected_uuid = Uuid::new_v4();
+        let mock_user_id = format!("usr_{}", expected_uuid);
+
+        // Expected request and mock response for a valid token
+        Mock::given(method("GET"))
+            .and(path("/v1/auth/validate"))
+            .and(header("Authorization", "Bearer valid_token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "valid": true,
+                "user_id": mock_user_id,
+                "display_name": "Test User"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = ProfileClient::new(reqwest::Client::new(), mock_server.uri());
+
+        // Act & Assert
+        let result = client.validate_token("valid_token").await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), expected_uuid);
+    }
+
+    #[tokio::test]
+    async fn validate_token_invalid_returns_not_found() {
+        let mock_server = MockServer::start().await;
+
+        // Expected request and mock response for an invalid token
+        Mock::given(method("GET"))
+            .and(path("/v1/auth/validate"))
+            .and(header("Authorization", "Bearer invalid_token"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "valid": false,
+                "error": "invalid_token"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = ProfileClient::new(reqwest::Client::new(), mock_server.uri());
+
+        let result = client.validate_token("invalid_token").await;
+
+        assert!(matches!(result.unwrap_err(), ClientError::NotFound));
+    }
+
+    #[tokio::test]
+    async fn validate_token_server_error_returns_dependency_unavailable() {
+        let mock_server = MockServer::start().await;
+
+        // Simulate Profile API being down or returning an unexpected error
+        Mock::given(method("GET"))
+            .and(path("/v1/auth/validate"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let client = ProfileClient::new(reqwest::Client::new(), mock_server.uri());
+
+        let result = client.validate_token("any_token").await;
+
+        assert!(matches!(result.unwrap_err(), ClientError::DependencyUnavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn validate_token_malformed_uuid_returns_not_found() {
+        let mock_server = MockServer::start().await;
+
+        // Simulate Profile API returning a valid response but with a malformed user_id that cannot be parsed as UUID
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "valid": true,
+                "user_id": "usr_not_a_uuid",
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = ProfileClient::new(reqwest::Client::new(), mock_server.uri());
+        let result = client.validate_token("valid_token").await;
+
+        // Should fail gracefully and return NotFound
+        assert!(matches!(result.unwrap_err(), ClientError::NotFound));
+    }
+}

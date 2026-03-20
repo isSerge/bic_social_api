@@ -47,3 +47,4 @@ path = "src/bin/mock_content_api.rs"
 
 [dev-dependencies]
 mockall = "0.14.0"
+wiremock = "0.6.5"

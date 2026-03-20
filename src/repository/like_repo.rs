@@ -12,6 +12,7 @@ use super::error::RepoError;
 #[async_trait]
 pub trait LikeRepository: Send + Sync {
     /// Inserts a like record into the repository.
+    /// Returns a tuple indicating whether the like already existed, the new total like count, and the timestamp of the like (either newly created or existing).
     async fn insert_like(
         &self,
         user_id: Uuid,
@@ -20,6 +21,7 @@ pub trait LikeRepository: Send + Sync {
     ) -> Result<(bool, i64, DateTime<Utc>), RepoError>;
 
     /// Deletes a like record from the repository.
+    /// Returns a tuple indicating whether a like was actually deleted and the new total like count after deletion.
     async fn delete_like(
         &self,
         user_id: Uuid,
@@ -35,6 +37,7 @@ pub trait LikeRepository: Send + Sync {
     ) -> Result<i64, RepoError>;
 
     /// Retrieves the like status for a specific user and content item.
+    /// Returns the timestamp of when the user liked the item, or None if the user has not liked it.
     async fn get_status(
         &self,
         user_id: Uuid,
@@ -44,6 +47,7 @@ pub trait LikeRepository: Send + Sync {
 
     // TODO: include cursor-based pagination for user likes retrieval
     /// Retrieves all likes for a specific user, optionally filtered by content type.
+    /// Returns a list of LikeRecord objects representing the user's likes
     async fn get_user_likes(
         &self,
         user_id: Uuid,
@@ -54,6 +58,7 @@ pub trait LikeRepository: Send + Sync {
     async fn batch_get_counts(&self, items: &[(ContentType, Uuid)]) -> Result<Vec<i64>, RepoError>;
 
     /// Retrieves like statuses for multiple content items for a specific user in a single batch operation.
+    /// Returns a list of Option<DateTime<Utc>> where each element corresponds to the input item at the same index, containing the like timestamp if the user liked that item or None if not.
     async fn batch_get_statuses(
         &self,
         user_id: Uuid,

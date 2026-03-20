@@ -3,7 +3,6 @@
 mod clients;
 mod config;
 mod domain;
-mod error;
 mod http;
 mod like_service;
 mod repository;

@@ -60,10 +60,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create Like Repository, and Like Service
     let like_repo = PgLikeRepository::new(writer_pool.clone(), reader_pool.clone()); // Cloning is cheap for PgPool
-    let cache_repo = RedisCacheRepository::new(redis_pool);
+    let cache_repo = Arc::new(RedisCacheRepository::new(redis_pool));
     let like_service = LikeService::new(
         Arc::new(like_repo),
-        Arc::new(cache_repo),
+        cache_repo.clone(),
         config.cache_ttl_like_counts_secs,
         config.cache_ttl_content_validation_secs,
         config.cache_ttl_user_status_secs,
@@ -79,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         content_type_registry: Arc::new(content_type_registry),
         like_service: Arc::new(like_service),
         profile_client: Arc::new(profile_client),
+        cache: cache_repo,
     };
 
     // Create the HTTP router with the application state

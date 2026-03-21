@@ -388,7 +388,7 @@ mod tests {
         let mock_cache_repo = Arc::new(mock_cache_repo);
         let like_service = Arc::new(LikeService::new(
             mock_like_repo,
-            mock_cache_repo,
+            mock_cache_repo.clone(),
             config.cache_ttl_like_counts_secs,
             config.cache_ttl_content_validation_secs,
             config.cache_ttl_user_status_secs,
@@ -396,8 +396,13 @@ mod tests {
         let profile_client =
             Arc::new(ProfileClient::new(reqwest::Client::new(), "http://mock-profile"));
 
-        let state =
-            AppState { config, content_type_registry: registry, like_service, profile_client };
+        let state = AppState {
+            config,
+            content_type_registry: registry,
+            like_service,
+            profile_client,
+            cache: mock_cache_repo,
+        };
 
         Router::new()
             .route("/v1/likes", post(like))

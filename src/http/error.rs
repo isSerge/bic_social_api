@@ -85,6 +85,23 @@ impl IntoResponse for ApiError {
                 format!("Invalid pagination cursor: {}", cursor),
             ),
 
+            ApiError::Domain(DomainError::Client(ClientError::DependencyUnavailable(_))) => {
+                (StatusCode::SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE", self.to_string())
+            }
+
+            ApiError::Domain(DomainError::Client(ClientError::NotFound)) => {
+                (StatusCode::NOT_FOUND, "CONTENT_NOT_FOUND", self.to_string())
+            }
+
+            ApiError::Domain(DomainError::Client(ClientError::Http(_))) => {
+                tracing::error!(error = %self, "HTTP client error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    "Unexpected internal error".to_string(),
+                )
+            }
+
             // Client layer mappings
             ApiError::Client(ClientError::DependencyUnavailable(_)) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE", self.to_string())

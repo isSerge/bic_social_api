@@ -15,7 +15,7 @@ use tokio::{net::TcpListener, signal};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
-    clients::profile::ProfileClient,
+    clients::{content::HttpContentClient, profile::ProfileClient},
     config::{AppConfig, ContentTypeRegistry},
     http::AppState,
     like_service::LikeService,
@@ -65,11 +65,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create Like Repository, and Like Service
     let like_repo = PgLikeRepository::new(writer_pool.clone(), reader_pool.clone()); // Cloning is cheap for PgPool
     let cache_repo = Arc::new(RedisCacheRepository::new(redis_pool));
-    let like_service =
-        LikeService::new(Arc::new(like_repo), cache_repo.clone(), config.cache.clone());
 
     // Initialize HTTP client and Profile API client
     let http_client = reqwest::Client::new();
+    let content_client =
+        Arc::new(HttpContentClient::new(http_client.clone(), config.clients.content_url.clone()));
+    let like_service = LikeService::new(
+        Arc::new(like_repo),
+        cache_repo.clone(),
+        content_client,
+        config.cache.clone(),
+    );
     let profile_client =
         ProfileClient::new(http_client.clone(), config.clients.profile_url.clone());
 

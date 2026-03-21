@@ -1,6 +1,7 @@
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::clients::error::ClientError;
 use crate::repository::error::RepoError;
 
 /// Domain-level errors that can occur during like/unlike operations
@@ -25,4 +26,8 @@ pub enum DomainError {
     /// Represents an error when a pagination cursor is invalid or cannot be decoded.
     #[error("Invalid pagination cursor: {0}")]
     InvalidCursor(String),
+
+    /// Wraps external client failures that bubble through the domain layer.
+    #[error(transparent)]
+    Client(#[from] ClientError),
 }

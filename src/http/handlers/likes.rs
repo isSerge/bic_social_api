@@ -367,6 +367,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::{
+        clients::content::MockContentValidationClient,
         clients::profile::ProfileClient,
         config::{AppConfig, ContentTypeRegistry},
         domain::{ContentType, LikeRecord},
@@ -389,6 +390,7 @@ mod tests {
         let like_service = Arc::new(LikeService::new(
             mock_like_repo,
             mock_cache_repo.clone(),
+            Arc::new(MockContentValidationClient::new()),
             config.cache.clone(),
         ));
         let profile_client =
@@ -447,8 +449,10 @@ mod tests {
             .times(1)
             .returning(move |_, _, _| Ok((false, like_count, timestamp)));
 
-        // Cache repo should call set_count with the new count
         let mut mock_cache = MockCacheRepository::new();
+        // Cache repo should call get_content_exists to check if content exists before liking
+        mock_cache.expect_get_content_exists().times(1).returning(|_, _| Ok(Some(true)));
+        // Cache repo should call set_count with the new count
         mock_cache
             .expect_set_count()
             .with(

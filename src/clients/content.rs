@@ -1,45 +1,42 @@
+use async_trait::async_trait;
 use reqwest::StatusCode;
-use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::clients::error::ClientError;
 
-/// Response structure for content validation
-#[derive(Debug, Deserialize)]
-struct ContentResponse {
-    id: Uuid,
-    content_type: String,
-    title: String,
-}
-
 /// Client for interacting with the Content API, specifically for content existence validation.
-pub struct ContentClient {
+pub struct HttpContentClient {
     http_client: reqwest::Client,
     base_url: String,
 }
 
-impl ContentClient {
-    pub fn new(http_client: reqwest::Client, base_url: impl Into<String>) -> Self {
-        ContentClient { http_client, base_url: base_url.into() }
-    }
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait ContentValidationClient: Send + Sync {
+    async fn validate_content(
+        &self,
+        content_type: &str,
+        content_id: Uuid,
+    ) -> Result<(), ClientError>;
+}
 
-    /// Validates that a content item exists by calling the Content API.
-    /// Returns `Ok(())` if the item exists, `ClientError::NotFound` if it does not,
-    /// or `ClientError::DependencyUnavailable` for any other failure.
-    pub async fn validate_content(
+impl HttpContentClient {
+    pub fn new(http_client: reqwest::Client, base_url: impl Into<String>) -> Self {
+        HttpContentClient { http_client, base_url: base_url.into() }
+    }
+}
+
+#[async_trait]
+impl ContentValidationClient for HttpContentClient {
+    async fn validate_content(
         &self,
         content_type: &str,
         content_id: Uuid,
     ) -> Result<(), ClientError> {
-        let url = format!(
-            "{}/v1/{}/{}",
-            self.base_url.trim_end_matches('/'),
-            content_type,
-            content_id,
-        );
+        let url =
+            format!("{}/v1/{}/{}", self.base_url.trim_end_matches('/'), content_type, content_id,);
 
-        let response =
-            self.http_client.get(&url).send().await.map_err(ClientError::Http)?;
+        let response = self.http_client.get(&url).send().await.map_err(ClientError::Http)?;
 
         match response.status() {
             StatusCode::OK => Ok(()),
@@ -70,7 +67,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = ContentClient::new(reqwest::Client::new(), mock_server.uri());
+        let client = HttpContentClient::new(reqwest::Client::new(), mock_server.uri());
         let result = client.validate_content("post", content_id).await;
 
         assert!(result.is_ok());
@@ -87,7 +84,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = ContentClient::new(reqwest::Client::new(), mock_server.uri());
+        let client = HttpContentClient::new(reqwest::Client::new(), mock_server.uri());
         let result = client.validate_content("post", content_id).await;
 
         assert!(matches!(result.unwrap_err(), ClientError::NotFound));
@@ -104,7 +101,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = ContentClient::new(reqwest::Client::new(), mock_server.uri());
+        let client = HttpContentClient::new(reqwest::Client::new(), mock_server.uri());
         let result = client.validate_content("post", content_id).await;
 
         assert!(matches!(result.unwrap_err(), ClientError::DependencyUnavailable(_)));
@@ -121,7 +118,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = ContentClient::new(reqwest::Client::new(), mock_server.uri());
+        let client = HttpContentClient::new(reqwest::Client::new(), mock_server.uri());
         let result = client.validate_content("invalid_type", content_id).await;
 
         assert!(matches!(result.unwrap_err(), ClientError::NotFound));

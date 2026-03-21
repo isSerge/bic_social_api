@@ -55,7 +55,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize Redis connection pool for caching
     let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
-        .create_pool(Some(Runtime::Tokio1))
+        .builder()
+        .expect("Invalid Redis URL")
+        .max_size(config.redis_pool_size)
+        .runtime(Runtime::Tokio1)
+        .build()
         .expect("Failed to create Redis pool"); // TODO: handle Redis connection errors gracefully
 
     // Create Like Repository, and Like Service

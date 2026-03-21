@@ -25,7 +25,13 @@ pub trait CacheRepository: Send + Sync {
         ttl_secs: u64,
     ) -> Result<(), RepoError>;
 
-    // TODO: add methods for token, leaderboard, rate limiting, etc.
+    /// Gets the user_id associated with a token from the cache. Returns None if not cached or token is invalid.
+    async fn get_token(&self, token: &str) -> Result<Option<Uuid>, RepoError>;
+
+    /// Sets the user_id associated with a token in the cache with a TTL.
+    async fn set_token(&self, token: &str, user_id: Uuid, ttl_secs: u64) -> Result<(), RepoError>;
+
+    // TODO: add methods for leaderboard, rate limiting, etc.
 }
 
 /// Concrete implementation of CacheRepository using Redis.
@@ -43,7 +49,12 @@ impl RedisCacheRepository {
         format!("like_count:{}:{}", content_type.0, content_id)
     }
 
-    // TODO: add similar helpers for other cache types (token, leaderboard, etc.)
+    /// Helper to consistently format the token cache key
+    fn token_key(token: &str) -> String {
+        format!("likes:token:{}", token)
+    }
+
+    // TODO: add similar helpers for other cache types (leaderboard, etc.)
 
     /// Helper function to get a Redis connection, with error handling that allows the app to operate without cache if Redis is unavailable.
     async fn get_connection(&self) -> Option<Connection> {
@@ -64,7 +75,7 @@ impl CacheRepository for RedisCacheRepository {
         content_type: ContentType,
         content_id: Uuid,
     ) -> Result<Option<i64>, RepoError> {
-        // If we can't get a Redis connection, we return Ok(None) to indicate cache miss, allowing the app to function without cache.
+        // Return Ok(None) to indicate cache miss if cannot connect
         let Some(mut conn) = self.get_connection().await else {
             return Ok(None);
         };
@@ -87,7 +98,7 @@ impl CacheRepository for RedisCacheRepository {
         count: i64,
         ttl_secs: u64,
     ) -> Result<(), RepoError> {
-        // If we can't get a Redis connection, we log the error and return Ok(()), allowing the app to function without cache.
+        // Return Ok(()) to indicate cache miss if cannot connect
         let Some(mut conn) = self.get_connection().await else {
             return Ok(());
         };
@@ -96,6 +107,42 @@ impl CacheRepository for RedisCacheRepository {
 
         if let Err(e) = conn.set_ex::<_, _, ()>(&key, count, ttl_secs).await {
             tracing::warn!(error = %e, key = %key, "Redis SETEX failed");
+        }
+
+        Ok(())
+    }
+
+    async fn get_token(&self, token: &str) -> Result<Option<Uuid>, RepoError> {
+        // Return Ok(None) to indicate cache miss if cannot connect
+        let Some(mut conn) = self.get_connection().await else {
+            return Ok(None);
+        };
+
+        let key = Self::token_key(token);
+
+        match conn.get::<_, Option<String>>(&key).await {
+            Ok(Some(uuid_str)) => {
+                // If it parses successfully, return it. Otherwise treat as miss.
+                Ok(Uuid::parse_str(&uuid_str).ok())
+            }
+            Ok(None) => Ok(None),
+            Err(e) => {
+                tracing::warn!(error = %e, "Redis GET token failed");
+                Ok(None)
+            }
+        }
+    }
+
+    async fn set_token(&self, token: &str, user_id: Uuid, ttl_secs: u64) -> Result<(), RepoError> {
+        // Return Ok(()) to indicate cache miss if cannot connect
+        let Some(mut conn) = self.get_connection().await else {
+            return Ok(());
+        };
+
+        let key = Self::token_key(token);
+
+        if let Err(e) = conn.set_ex::<_, _, ()>(&key, user_id.to_string(), ttl_secs).await {
+            tracing::warn!(error = %e, "Redis SETEX token failed");
         }
 
         Ok(())
@@ -138,6 +185,27 @@ mod tests {
 
         // This should NOT return a RepoError. It should return Ok(()) because the DB write already succeeded anyway.
         let result = cache.set_count(content_type("post"), Uuid::new_v4(), 42, 300).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_get_token_degrades_gracefully_when_redis_is_down() {
+        let cache = RedisCacheRepository::new(broken_redis_pool());
+
+        // This should NOT return a RepoError. It should return Ok(None) so the service can fallback to Postgres.
+        let result = cache.get_token("invalid_token").await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_set_token_degrades_gracefully_when_redis_is_down() {
+        let cache = RedisCacheRepository::new(broken_redis_pool());
+
+        // This should NOT return a RepoError. It should return Ok(()) because the DB write already succeeded anyway.
+        let result = cache.set_token("some_token", Uuid::new_v4(), 300).await;
 
         assert!(result.is_ok());
     }

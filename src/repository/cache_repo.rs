@@ -1,7 +1,10 @@
 use crate::domain::ContentType;
 use crate::repository::error::RepoError;
 use async_trait::async_trait;
-use deadpool_redis::{Connection, Pool, redis::AsyncCommands};
+use deadpool_redis::{
+    Connection, Pool,
+    redis::{AsyncCommands, Script},
+};
 use uuid::Uuid;
 
 /// Repository trait for caching like counts and other related data.
@@ -46,7 +49,17 @@ pub trait CacheRepository: Send + Sync {
         ttl_secs: u64,
     ) -> Result<(), RepoError>;
 
-    // TODO: add methods for leaderboard, rate limiting, etc.
+    /// Checks if a request is allowed by the rate limiter.
+    /// Returns `Ok((true, 0))` if allowed.
+    /// Returns `Ok((false, retry_after_secs))` if rate limited.
+    async fn check_rate_limit(
+        &self,
+        key: &str,
+        limit: u32,
+        window_secs: u64,
+    ) -> Result<(bool, u64), RepoError>;
+
+    // TODO: add methods for leaderboard etc.
 }
 
 /// Concrete implementation of CacheRepository using Redis.
@@ -209,6 +222,53 @@ impl CacheRepository for RedisCacheRepository {
 
         Ok(())
     }
+
+    async fn check_rate_limit(
+        &self,
+        key: &str,
+        limit: u32,
+        window_secs: u64,
+    ) -> Result<(bool, u64), RepoError> {
+        // Return Ok((true, 0)) if Redis is unavailable to allow the request (fail open)
+        let Some(mut conn) = self.get_connection().await else {
+            return Ok((true, 0));
+        };
+
+        // Use Redis script for atomicity
+        let script = Script::new(
+            r#"
+                local current = redis.call('INCR', KEYS[1])
+                if current == 1 then
+                    redis.call('EXPIRE', KEYS[1], ARGV[1])
+                end
+                local ttl = redis.call('TTL', KEYS[1])
+                return {current, ttl}
+            "#,
+        );
+
+        // Invoke the script with the key and window size as arguments. Returns the current count and TTL.
+        let result: Result<(u32, u64), _> =
+            script.key(key).arg(window_secs).invoke_async(&mut conn).await;
+
+        match result {
+            Ok((count, ttl)) => {
+                // If TTL is negative (key missing or no expiry), fallback to window_secs
+                let ttl = if ttl > 0 { ttl } else { window_secs };
+
+                if count > limit {
+                    // Blocked: return false and the seconds remaining until reset.
+                    Ok((false, ttl))
+                } else {
+                    // Allowed
+                    Ok((true, 0))
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, key = %key, "Redis rate limit script failed");
+                return Ok((true, 0)); // Fail open on error
+            }
+        }
+    }
 }
 
 // NOTE: Happy path tests are covered by integration tests
@@ -289,5 +349,15 @@ mod tests {
         let result = cache.set_content_exists(content_type("post"), Uuid::new_v4(), 3600).await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_check_rate_limit_degrades_gracefully_when_redis_is_down() {
+        let cache = RedisCacheRepository::new(broken_redis_pool());
+
+        let result = cache.check_rate_limit("test_key", 5, 60).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), (true, 0));
     }
 }

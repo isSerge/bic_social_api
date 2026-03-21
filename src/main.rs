@@ -4,9 +4,9 @@ mod clients;
 mod config;
 mod domain;
 mod http;
-mod like_service;
 mod repository;
 pub mod server_utils;
+mod service;
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
@@ -18,8 +18,8 @@ use crate::{
     clients::{content::HttpContentClient, profile::ProfileClient},
     config::{AppConfig, ContentTypeRegistry},
     http::AppState,
-    like_service::LikeService,
     repository::{cache_repo::RedisCacheRepository, like_repo::PgLikeRepository},
+    service::like_service::LikeService,
 };
 
 #[tokio::main]

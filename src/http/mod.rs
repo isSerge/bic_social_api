@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::{
     clients::profile::ProfileClient,
     config::{AppConfig, ContentTypeRegistry},
-    like_service::LikeService,
     repository::cache_repo::CacheRepository,
+    service::like_service::LikeService,
 };
 
 pub mod error;

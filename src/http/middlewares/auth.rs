@@ -79,8 +79,8 @@ mod tests {
         clients::content::MockContentValidationClient,
         clients::profile::ProfileClient,
         config::{AppConfig, CacheConfig, ContentTypeRegistry},
-        like_service::LikeService,
         repository::{cache_repo::MockCacheRepository, like_repo::MockLikeRepository},
+        service::like_service::LikeService,
     };
 
     use super::*;

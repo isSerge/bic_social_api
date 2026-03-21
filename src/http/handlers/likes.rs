@@ -372,8 +372,8 @@ mod tests {
         config::{AppConfig, ContentTypeRegistry},
         domain::{ContentType, LikeRecord},
         http::AppState,
-        like_service::LikeService,
         repository::{cache_repo::MockCacheRepository, like_repo::MockLikeRepository},
+        service::like_service::LikeService,
     };
 
     // --- Helper: Setup Test App ---

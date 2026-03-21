@@ -3,7 +3,8 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::clients::error::ClientError;
+use super::circuit_breaker::CircuitBreaker;
+use crate::{clients::error::ClientError, config::CircuitBreakerConfig};
 
 /// Response structure for profile validation
 #[derive(Debug, Deserialize)]
@@ -18,16 +19,24 @@ struct ProfileValidationResponse {
 pub struct ProfileClient {
     http_client: reqwest::Client,
     base_url: String,
+    breaker: CircuitBreaker,
 }
 
 impl ProfileClient {
-    pub fn new(http_client: reqwest::Client, base_url: impl Into<String>) -> Self {
-        ProfileClient { http_client, base_url: base_url.into() }
+    pub fn new(
+        http_client: reqwest::Client,
+        base_url: impl Into<String>,
+        config: CircuitBreakerConfig,
+    ) -> Self {
+        ProfileClient {
+            http_client,
+            base_url: base_url.into(),
+            breaker: CircuitBreaker::new("Profile API", config),
+        }
     }
 
-    /// Validates a token by calling the Profile API. Returns the associated user ID if valid.
-    pub async fn validate_token(&self, token: &str) -> Result<Uuid, ClientError> {
-        let url = format!("{}/v1/auth/validate", self.base_url.trim_end_matches("/"));
+    async fn execute_request(&self, token: &str) -> Result<Uuid, ClientError> {
+        let url = format!("{}/v1/auth/validate", self.base_url.trim_end_matches('/'));
 
         let response = self
             .http_client
@@ -43,18 +52,41 @@ impl ProfileClient {
                     response.json().await.map_err(ClientError::Http)?;
 
                 if !payload.valid {
-                    return Err(ClientError::NotFound); // Map to 401 in the handler
+                    return Err(ClientError::NotFound);
                 }
 
-                let user_id_str = payload.user_id.ok_or(ClientError::NotFound)?; // Defensive check, should not happen if valid is true
-
-                // Normalize user ID by stripping "usr_" prefix if present, then parse as UUID
+                let user_id_str = payload.user_id.ok_or(ClientError::NotFound)?;
                 let normalized = user_id_str.strip_prefix("usr_").unwrap_or(&user_id_str);
 
                 Uuid::parse_str(normalized).map_err(|_| ClientError::NotFound)
             }
             StatusCode::UNAUTHORIZED => Err(ClientError::NotFound),
             _ => Err(ClientError::DependencyUnavailable("Profile API".to_string())),
+        }
+    }
+
+    /// Validates a token by calling the Profile API. Returns the associated user ID if valid.
+    pub async fn validate_token(&self, token: &str) -> Result<Uuid, ClientError> {
+        if !self.breaker.is_call_permitted() {
+            tracing::warn!("Circuit breaker OPEN for Profile API");
+            return Err(ClientError::DependencyUnavailable("Profile API".to_string()));
+        }
+
+        let result = self.execute_request(token).await;
+
+        match &result {
+            Ok(_) => {
+                self.breaker.on_success();
+                result
+            }
+            Err(ClientError::NotFound) => {
+                self.breaker.on_success();
+                result
+            }
+            Err(ClientError::Http(_)) | Err(ClientError::DependencyUnavailable(_)) => {
+                self.breaker.on_error();
+                result
+            }
         }
     }
 }
@@ -84,7 +116,11 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = ProfileClient::new(reqwest::Client::new(), mock_server.uri());
+        let client = ProfileClient::new(
+            reqwest::Client::new(),
+            mock_server.uri(),
+            CircuitBreakerConfig::default(),
+        );
 
         // Act & Assert
         let result = client.validate_token("valid_token").await;
@@ -107,7 +143,11 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = ProfileClient::new(reqwest::Client::new(), mock_server.uri());
+        let client = ProfileClient::new(
+            reqwest::Client::new(),
+            mock_server.uri(),
+            CircuitBreakerConfig::default(),
+        );
 
         let result = client.validate_token("invalid_token").await;
 
@@ -125,7 +165,11 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = ProfileClient::new(reqwest::Client::new(), mock_server.uri());
+        let client = ProfileClient::new(
+            reqwest::Client::new(),
+            mock_server.uri(),
+            CircuitBreakerConfig::default(),
+        );
 
         let result = client.validate_token("any_token").await;
 
@@ -145,10 +189,65 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = ProfileClient::new(reqwest::Client::new(), mock_server.uri());
+        let client = ProfileClient::new(
+            reqwest::Client::new(),
+            mock_server.uri(),
+            CircuitBreakerConfig::default(),
+        );
         let result = client.validate_token("valid_token").await;
 
         // Should fail gracefully and return NotFound
         assert!(matches!(result.unwrap_err(), ClientError::NotFound));
+    }
+
+    #[tokio::test]
+    async fn validate_token_trips_circuit_breaker() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let config = CircuitBreakerConfig {
+            failure_threshold: 2,
+            recovery_timeout_secs: 10,
+            success_threshold: 1,
+        };
+
+        let client = ProfileClient::new(reqwest::Client::new(), mock_server.uri(), config);
+
+        let result1 = client.validate_token("valid_token").await;
+        assert!(matches!(result1.unwrap_err(), ClientError::DependencyUnavailable(_)));
+
+        let result2 = client.validate_token("valid_token").await;
+        assert!(matches!(result2.unwrap_err(), ClientError::DependencyUnavailable(_)));
+
+        let result3 = client.validate_token("valid_token").await;
+        assert!(matches!(result3.unwrap_err(), ClientError::DependencyUnavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn validate_token_unauthorized_does_not_trip_circuit_breaker() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&mock_server)
+            .await;
+
+        let config = CircuitBreakerConfig {
+            failure_threshold: 1,
+            recovery_timeout_secs: 10,
+            success_threshold: 1,
+        };
+
+        let client = ProfileClient::new(reqwest::Client::new(), mock_server.uri(), config);
+
+        let result1 = client.validate_token("invalid_token").await;
+        assert!(matches!(result1.unwrap_err(), ClientError::NotFound));
+
+        let result2 = client.validate_token("invalid_token").await;
+        assert!(matches!(result2.unwrap_err(), ClientError::NotFound));
     }
 }

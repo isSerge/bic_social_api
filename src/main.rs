@@ -68,16 +68,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize HTTP client and Profile API client
     let http_client = reqwest::Client::new();
-    let content_client =
-        Arc::new(HttpContentClient::new(http_client.clone(), config.clients.content_url.clone()));
-    let like_service = LikeService::new(
-        Arc::new(like_repo),
-        cache_repo.clone(),
-        content_client,
-        config.cache.clone(),
+    let content_client = Arc::new(HttpContentClient::new(
+        http_client.clone(),
+        config.clients.content_url.clone(),
+        config.circuit_breaker,
+    ));
+    let like_service =
+        LikeService::new(Arc::new(like_repo), cache_repo.clone(), content_client, config.cache);
+    let profile_client = ProfileClient::new(
+        http_client.clone(),
+        config.clients.profile_url.clone(),
+        config.circuit_breaker,
     );
-    let profile_client =
-        ProfileClient::new(http_client.clone(), config.clients.profile_url.clone());
 
     // Create shared application state
     let state = AppState {

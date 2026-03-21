@@ -78,7 +78,7 @@ mod tests {
     use crate::{
         clients::content::MockContentValidationClient,
         clients::profile::ProfileClient,
-        config::{AppConfig, CacheConfig, ContentTypeRegistry},
+        config::{AppConfig, CacheConfig, CircuitBreakerConfig, ContentTypeRegistry},
         repository::{cache_repo::MockCacheRepository, like_repo::MockLikeRepository},
         service::like_service::LikeService,
     };
@@ -118,10 +118,13 @@ mod tests {
             mock_like_repo,
             mock_cache_arc.clone(),
             Arc::new(MockContentValidationClient::new()),
-            config.cache.clone(),
+            config.cache,
         ));
-        let profile_client =
-            Arc::new(ProfileClient::new(reqwest::Client::new(), mock_server.uri()));
+        let profile_client = Arc::new(ProfileClient::new(
+            reqwest::Client::new(),
+            mock_server.uri(),
+            config.circuit_breaker,
+        ));
 
         let state = AppState {
             config,
@@ -253,7 +256,11 @@ mod tests {
                 Arc::new(MockContentValidationClient::new()),
                 CacheConfig::default(),
             )),
-            profile_client: Arc::new(ProfileClient::new(reqwest::Client::new(), mock_server.uri())),
+            profile_client: Arc::new(ProfileClient::new(
+                reqwest::Client::new(),
+                mock_server.uri(),
+                CircuitBreakerConfig::default(),
+            )),
             cache: Arc::new(mock_cache),
         };
 

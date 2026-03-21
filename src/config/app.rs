@@ -61,7 +61,7 @@ pub struct ClientsConfig {
     pub profile_url: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize)]
 pub struct CacheConfig {
     #[serde(rename = "cache_ttl_like_counts_secs", default = "default_cache_ttl_like_counts_secs")]
     pub like_counts_ttl_secs: u64,
@@ -99,7 +99,7 @@ pub struct LimitsConfig {
     pub max_top_liked_limit: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone, Copy)]
 pub struct CircuitBreakerConfig {
     #[serde(
         rename = "circuit_breaker_failure_threshold",
@@ -116,6 +116,16 @@ pub struct CircuitBreakerConfig {
         default = "default_circuit_breaker_success_threshold"
     )]
     pub success_threshold: u32,
+}
+
+impl Default for CircuitBreakerConfig {
+    fn default() -> Self {
+        Self {
+            failure_threshold: default_circuit_breaker_failure_threshold(),
+            recovery_timeout_secs: default_circuit_breaker_recovery_timeout_secs(),
+            success_threshold: default_circuit_breaker_success_threshold(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

@@ -391,10 +391,13 @@ mod tests {
             mock_like_repo,
             mock_cache_repo.clone(),
             Arc::new(MockContentValidationClient::new()),
-            config.cache.clone(),
+            config.cache,
         ));
-        let profile_client =
-            Arc::new(ProfileClient::new(reqwest::Client::new(), "http://mock-profile"));
+        let profile_client = Arc::new(ProfileClient::new(
+            reqwest::Client::new(),
+            "http://mock-profile",
+            config.circuit_breaker,
+        ));
 
         let state = AppState {
             config,

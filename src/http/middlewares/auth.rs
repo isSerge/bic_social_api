@@ -29,11 +29,21 @@ pub async fn require_auth(
         }
     };
 
+    // Try cache
+    if let Ok(Some(cached_user_id)) = state.cache.get_token(token).await {
+        req.extensions_mut().insert(cached_user_id);
+        return Ok(next.run(req).await);
+    }
+
     // Validate token with Profile API
     let result = state.profile_client.validate_token(token).await;
 
     match result {
         Ok(user_id) => {
+            // Populate cache
+            let ttl = state.config.cache_ttl_user_status_secs;
+            let _ = state.cache.set_token(token, user_id, ttl).await;
+
             // Inject user_id into request extensions for handlers to use
             req.extensions_mut().insert(user_id);
 
@@ -74,8 +84,9 @@ mod tests {
 
     use super::*;
 
-    // --- Helper: Setup Test App with Real Middleware ---
-    async fn setup_app_with_mock_profile() -> (Router, MockServer, Uuid) {
+    /// Helper function to setup an app with the auth middleware and a mock Profile API
+    /// Returns the app, the mock server (to configure responses), the expected user UUID, and a reference to the mock cache to override default assertions
+    async fn setup_app_with_mock_profile() -> (Router, MockServer, Uuid, Arc<MockCacheRepository>) {
         let mock_server = MockServer::start().await;
 
         let expected_uuid = Uuid::new_v4();
@@ -94,11 +105,17 @@ mod tests {
 
         let config = Arc::new(AppConfig::default());
         let registry = Arc::new(ContentTypeRegistry::default());
-        let mock_cache = Arc::new(MockCacheRepository::new());
+
+        let mut mock_cache = MockCacheRepository::new();
+        // Cache misses by default
+        mock_cache.expect_get_token().returning(|_| Ok(None));
+        mock_cache.expect_set_token().returning(|_, _, _| Ok(()));
+
+        let mock_cache_arc = Arc::new(mock_cache);
         let mock_like_repo = Arc::new(MockLikeRepository::new());
         let like_service = Arc::new(LikeService::new(
             mock_like_repo,
-            mock_cache.clone(),
+            mock_cache_arc.clone(),
             config.cache_ttl_like_counts_secs,
             config.cache_ttl_content_validation_secs,
             config.cache_ttl_user_status_secs,
@@ -111,7 +128,7 @@ mod tests {
             content_type_registry: registry,
             like_service,
             profile_client,
-            cache: mock_cache,
+            cache: mock_cache_arc.clone(),
         };
 
         // A dummy handler to test the middleware - just returns the user_id from extensions if auth succeeds
@@ -124,12 +141,12 @@ mod tests {
             .layer(middleware::from_fn_with_state(state.clone(), require_auth))
             .with_state(state);
 
-        (app, mock_server, expected_uuid)
+        (app, mock_server, expected_uuid, mock_cache_arc)
     }
 
     #[tokio::test]
     async fn auth_middleware_allows_valid_token_and_injects_user_id() {
-        let (app, _server, expected_uuid) = setup_app_with_mock_profile().await;
+        let (app, _server, expected_uuid, _mock_cache) = setup_app_with_mock_profile().await;
 
         let request = Request::builder()
             .method(http::Method::GET)
@@ -151,7 +168,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_middleware_rejects_missing_header() {
-        let (app, _server, _) = setup_app_with_mock_profile().await;
+        let (app, _server, _, _mock_cache) = setup_app_with_mock_profile().await;
 
         let request = Request::builder()
             .method(http::Method::GET)
@@ -168,7 +185,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_middleware_rejects_malformed_header() {
-        let (app, _server, _) = setup_app_with_mock_profile().await;
+        let (app, _server, _, _mock_cache) = setup_app_with_mock_profile().await;
 
         let request = Request::builder()
             .method(http::Method::GET)
@@ -183,7 +200,7 @@ mod tests {
 
     #[tokio::test]
     async fn middleware_rejects_invalid_token_from_profile_api() {
-        let (app, mock_server, _) = setup_app_with_mock_profile().await;
+        let (app, mock_server, _, _mock_cache) = setup_app_with_mock_profile().await;
 
         // Configure the mock server to reject "bad_token"
         Mock::given(method("GET"))
@@ -205,5 +222,62 @@ mod tests {
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn auth_middleware_cache_hit_bypasses_http() {
+        let mock_server = MockServer::start().await;
+        let expected_uuid = Uuid::new_v4();
+
+        // The Profile API should NEVER be called
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let mut mock_cache = MockCacheRepository::new();
+        // Simulate a Cache Hit
+        mock_cache
+            .expect_get_token()
+            .with(mockall::predicate::eq("cached_token"))
+            .times(1)
+            .returning(move |_| Ok(Some(expected_uuid)));
+
+        let state = AppState {
+            config: Arc::new(AppConfig::default()),
+            content_type_registry: Arc::new(ContentTypeRegistry::default()),
+            like_service: Arc::new(LikeService::new(
+                Arc::new(MockLikeRepository::new()),
+                Arc::new(MockCacheRepository::new()),
+                300,
+                300,
+                300,
+            )),
+            profile_client: Arc::new(ProfileClient::new(reqwest::Client::new(), mock_server.uri())),
+            cache: Arc::new(mock_cache),
+        };
+
+        async fn dummy_handler(Extension(user_id): Extension<Uuid>) -> impl IntoResponse {
+            (StatusCode::OK, user_id.to_string())
+        }
+
+        let app = Router::new()
+            .route("/protected", get(dummy_handler))
+            .layer(middleware::from_fn_with_state(state.clone(), require_auth))
+            .with_state(state);
+
+        let request = Request::builder()
+            .method(http::Method::GET)
+            .uri("/protected")
+            .header(http::header::AUTHORIZATION, "Bearer cached_token")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(String::from_utf8(body_bytes.to_vec()).unwrap(), expected_uuid.to_string());
     }
 }

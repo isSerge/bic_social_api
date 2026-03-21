@@ -3,6 +3,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use crate::config::CacheConfig;
 use crate::domain::{ContentType, DomainError, LikeRecord, PaginationCursor};
 use crate::repository::{cache_repo::CacheRepository, like_repo::LikeRepository};
 
@@ -10,9 +11,7 @@ use crate::repository::{cache_repo::CacheRepository, like_repo::LikeRepository};
 pub struct LikeService {
     repo: Arc<dyn LikeRepository>,
     cache: Arc<dyn CacheRepository>,
-    cache_ttl_like_counts_secs: u64,
-    cache_ttl_content_validation_secs: u64,
-    cache_ttl_user_status_secs: u64,
+    config: CacheConfig,
     // TODO: include clients and broadcaster
 }
 
@@ -20,17 +19,9 @@ impl LikeService {
     pub fn new(
         repo: Arc<dyn LikeRepository>,
         cache: Arc<dyn CacheRepository>,
-        cache_ttl_like_counts_secs: u64,
-        cache_ttl_content_validation_secs: u64,
-        cache_ttl_user_status_secs: u64,
+        config: CacheConfig,
     ) -> Self {
-        Self {
-            repo,
-            cache,
-            cache_ttl_like_counts_secs,
-            cache_ttl_content_validation_secs,
-            cache_ttl_user_status_secs,
-        }
+        Self { repo, cache, config }
     }
 
     /// Handles a like operation: validates the token, checks content existence, and records the like.
@@ -52,7 +43,7 @@ impl LikeService {
         if !already_existed {
             let _ = self
                 .cache
-                .set_count(content_type, content_id, new_count, self.cache_ttl_like_counts_secs)
+                .set_count(content_type, content_id, new_count, self.config.like_counts_ttl_secs)
                 .await;
         }
 
@@ -76,7 +67,7 @@ impl LikeService {
         if was_liked {
             let _ = self
                 .cache
-                .set_count(content_type, content_id, new_count, self.cache_ttl_like_counts_secs)
+                .set_count(content_type, content_id, new_count, self.config.like_counts_ttl_secs)
                 .await;
         }
 
@@ -100,7 +91,7 @@ impl LikeService {
         // Populate cache
         let _ = self
             .cache
-            .set_count(content_type, content_id, count, self.cache_ttl_like_counts_secs)
+            .set_count(content_type, content_id, count, self.config.like_counts_ttl_secs)
             .await;
 
         Ok(count)
@@ -184,12 +175,9 @@ mod tests {
         ContentType(Arc::from(raw.to_string()))
     }
 
-    const CACHE_TTL_LIKE_COUNTS_SECS: u64 = 300;
-    const CACHE_TTL_CONTENT_VALIDATION_SECS: u64 = 3600;
-    const CACHE_TTL_USER_STATUS_SECS: u64 = 60;
-
     #[tokio::test]
     async fn test_like_new_updates_cache() {
+        let config = CacheConfig::default();
         let user_id = Uuid::new_v4();
         let ct = content_type("post");
         let content_id = Uuid::new_v4();
@@ -205,22 +193,11 @@ mod tests {
         // NEW like, MUST update the cache
         mock_cache
             .expect_set_count()
-            .with(
-                mockall::predicate::eq(ct.clone()),
-                mockall::predicate::eq(content_id),
-                mockall::predicate::eq(42),
-                mockall::predicate::eq(CACHE_TTL_LIKE_COUNTS_SECS),
-            )
+            .with(eq(ct.clone()), eq(content_id), eq(42), eq(config.like_counts_ttl_secs))
             .times(1)
             .returning(|_, _, _, _| Ok(()));
 
-        let service = LikeService::new(
-            Arc::new(mock_repo),
-            Arc::new(mock_cache),
-            CACHE_TTL_LIKE_COUNTS_SECS,
-            CACHE_TTL_CONTENT_VALIDATION_SECS,
-            CACHE_TTL_USER_STATUS_SECS,
-        );
+        let service = LikeService::new(Arc::new(mock_repo), Arc::new(mock_cache), config);
         let result = service.like(user_id, ct, content_id).await;
 
         assert!(result.is_ok());
@@ -240,13 +217,8 @@ mod tests {
         // ALREADY EXISTED (true), it MUST NOT call Redis
         mock_cache.expect_set_count().times(0);
 
-        let service = LikeService::new(
-            Arc::new(mock_repo),
-            Arc::new(mock_cache),
-            CACHE_TTL_LIKE_COUNTS_SECS,
-            CACHE_TTL_CONTENT_VALIDATION_SECS,
-            CACHE_TTL_USER_STATUS_SECS,
-        );
+        let service =
+            LikeService::new(Arc::new(mock_repo), Arc::new(mock_cache), CacheConfig::default());
         let result = service.like(user_id, ct, content_id).await;
 
         assert!(result.is_ok());
@@ -267,13 +239,8 @@ mod tests {
             .times(1)
             .returning(|_, _, _| Err(RepoError::Db(SqlxError::RowNotFound)));
 
-        let service = LikeService::new(
-            Arc::new(mock_repo),
-            Arc::new(mock_cache),
-            CACHE_TTL_LIKE_COUNTS_SECS,
-            CACHE_TTL_CONTENT_VALIDATION_SECS,
-            CACHE_TTL_USER_STATUS_SECS,
-        );
+        let service =
+            LikeService::new(Arc::new(mock_repo), Arc::new(mock_cache), CacheConfig::default());
 
         // Act
         let result = service.like(user_id, ct, content_id).await;
@@ -289,6 +256,7 @@ mod tests {
     #[tokio::test]
     async fn test_unlike_existing_updates_cache() {
         // Arrange
+        let config = CacheConfig::default();
         let user_id = Uuid::new_v4();
         let ct = content_type("post");
         let content_id = Uuid::new_v4();
@@ -309,18 +277,12 @@ mod tests {
                 eq(ct.clone()),
                 eq(content_id),
                 eq(like_count_after),
-                eq(CACHE_TTL_LIKE_COUNTS_SECS),
+                eq(config.like_counts_ttl_secs),
             )
             .times(1)
             .returning(|_, _, _, _| Ok(()));
 
-        let service = LikeService::new(
-            Arc::new(mock_repo),
-            Arc::new(mock_cache),
-            CACHE_TTL_LIKE_COUNTS_SECS,
-            CACHE_TTL_CONTENT_VALIDATION_SECS,
-            CACHE_TTL_USER_STATUS_SECS,
-        );
+        let service = LikeService::new(Arc::new(mock_repo), Arc::new(mock_cache), config);
 
         // Act
         let result = service.unlike(user_id, ct, content_id).await;
@@ -346,13 +308,8 @@ mod tests {
         // NEVER EXISTED (false), it MUST NOT call Redis
         mock_cache.expect_set_count().times(0);
 
-        let service = LikeService::new(
-            Arc::new(mock_repo),
-            Arc::new(mock_cache),
-            CACHE_TTL_LIKE_COUNTS_SECS,
-            CACHE_TTL_CONTENT_VALIDATION_SECS,
-            CACHE_TTL_USER_STATUS_SECS,
-        );
+        let service =
+            LikeService::new(Arc::new(mock_repo), Arc::new(mock_cache), CacheConfig::default());
 
         // Act
         let result = service.unlike(user_id, ct, content_id).await;
@@ -378,13 +335,8 @@ mod tests {
             .times(1)
             .returning(|_, _, _| Err(RepoError::Db(SqlxError::RowNotFound)));
 
-        let service = LikeService::new(
-            Arc::new(mock_repo),
-            Arc::new(mock_cache),
-            CACHE_TTL_LIKE_COUNTS_SECS,
-            CACHE_TTL_CONTENT_VALIDATION_SECS,
-            CACHE_TTL_USER_STATUS_SECS,
-        );
+        let service =
+            LikeService::new(Arc::new(mock_repo), Arc::new(mock_cache), CacheConfig::default());
 
         // Act
         let result = service.unlike(user_id, ct, content_id).await;
@@ -414,13 +366,8 @@ mod tests {
             .times(1)
             .returning(|_, _| Ok(Some(99)));
 
-        let service = LikeService::new(
-            Arc::new(mock_repo),
-            Arc::new(mock_cache),
-            CACHE_TTL_LIKE_COUNTS_SECS,
-            CACHE_TTL_CONTENT_VALIDATION_SECS,
-            CACHE_TTL_USER_STATUS_SECS,
-        );
+        let service =
+            LikeService::new(Arc::new(mock_repo), Arc::new(mock_cache), CacheConfig::default());
 
         let result = service.get_count(ct, content_id).await;
 
@@ -430,6 +377,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_count_cache_miss_calls_db_and_populates_cache() {
+        let config = CacheConfig::default();
         let ct = content_type("bonus_hunter");
         let content_id = Uuid::new_v4();
         let db_count = 150;
@@ -450,17 +398,11 @@ mod tests {
         // 2. Second, the service populates the cache with the DB result
         mock_cache
             .expect_set_count()
-            .with(eq(ct.clone()), eq(content_id), eq(db_count), eq(CACHE_TTL_LIKE_COUNTS_SECS))
+            .with(eq(ct.clone()), eq(content_id), eq(db_count), eq(config.like_counts_ttl_secs))
             .times(1)
             .returning(|_, _, _, _| Ok(()));
 
-        let service = LikeService::new(
-            Arc::new(mock_repo),
-            Arc::new(mock_cache),
-            CACHE_TTL_LIKE_COUNTS_SECS,
-            CACHE_TTL_CONTENT_VALIDATION_SECS,
-            CACHE_TTL_USER_STATUS_SECS,
-        );
+        let service = LikeService::new(Arc::new(mock_repo), Arc::new(mock_cache), config);
 
         let result = service.get_count(ct, content_id).await;
 
@@ -483,13 +425,8 @@ mod tests {
             .times(1)
             .returning(move |_, _, _| Ok(Some(expected_time)));
 
-        let service = LikeService::new(
-            Arc::new(mock_repo),
-            Arc::new(mock_cache),
-            CACHE_TTL_LIKE_COUNTS_SECS,
-            CACHE_TTL_CONTENT_VALIDATION_SECS,
-            CACHE_TTL_USER_STATUS_SECS,
-        );
+        let service =
+            LikeService::new(Arc::new(mock_repo), Arc::new(mock_cache), CacheConfig::default());
 
         // Act
         let result = service.get_status(user_id, content_type, content_id).await;
@@ -517,13 +454,8 @@ mod tests {
             .times(1)
             .returning(|_| Ok(vec![100, 200]));
 
-        let service = LikeService::new(
-            Arc::new(mock_repo),
-            Arc::new(mock_cache),
-            CACHE_TTL_LIKE_COUNTS_SECS,
-            CACHE_TTL_CONTENT_VALIDATION_SECS,
-            CACHE_TTL_USER_STATUS_SECS,
-        );
+        let service =
+            LikeService::new(Arc::new(mock_repo), Arc::new(mock_cache), CacheConfig::default());
 
         // Act
         let result = service.batch_get_counts(&items).await;
@@ -550,13 +482,8 @@ mod tests {
             .times(1)
             .returning(move |_, _| Ok(vec![Some(ts)]));
 
-        let service = LikeService::new(
-            Arc::new(mock_repo),
-            Arc::new(mock_cache),
-            CACHE_TTL_LIKE_COUNTS_SECS,
-            CACHE_TTL_CONTENT_VALIDATION_SECS,
-            CACHE_TTL_USER_STATUS_SECS,
-        );
+        let service =
+            LikeService::new(Arc::new(mock_repo), Arc::new(mock_cache), CacheConfig::default());
 
         // Act
         let result = service.batch_get_statuses(user_id, &items).await;
@@ -588,13 +515,8 @@ mod tests {
                 Ok(vec![(ct_clone1.clone(), id1, 1500), (ct_clone2.clone(), id2, 900)])
             });
 
-        let service = LikeService::new(
-            Arc::new(mock_repo),
-            Arc::new(mock_cache),
-            CACHE_TTL_LIKE_COUNTS_SECS,
-            CACHE_TTL_CONTENT_VALIDATION_SECS,
-            CACHE_TTL_USER_STATUS_SECS,
-        );
+        let service =
+            LikeService::new(Arc::new(mock_repo), Arc::new(mock_cache), CacheConfig::default());
 
         // Act
         let result = service.get_top_liked(Some(content_type), Some(since), limit).await;
@@ -629,13 +551,8 @@ mod tests {
             .times(1)
             .returning(|_, _, _, _| Ok(vec![])); // Empty vec is fine for this assertion
 
-        let service = LikeService::new(
-            Arc::new(mock_repo),
-            Arc::new(mock_cache),
-            CACHE_TTL_LIKE_COUNTS_SECS,
-            CACHE_TTL_CONTENT_VALIDATION_SECS,
-            CACHE_TTL_USER_STATUS_SECS,
-        );
+        let service =
+            LikeService::new(Arc::new(mock_repo), Arc::new(mock_cache), CacheConfig::default());
         let result = service.get_user_likes(user_id, Some(content_type), Some(cursor), limit).await;
 
         assert!(result.is_ok());

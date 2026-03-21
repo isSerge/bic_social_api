@@ -205,7 +205,7 @@ pub async fn batch_counts(
     Json(payload): Json<BatchRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     // Validate batch size against configured maximum
-    let max = state.config.max_batch_pairs;
+    let max = state.config.limits.max_batch_pairs;
 
     if payload.items.len() > max {
         // TODO: think where this error belongs
@@ -253,7 +253,7 @@ pub async fn batch_statuses(
     Json(payload): Json<BatchRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     // Validate batch size against configured maximum
-    let max = state.config.max_batch_pairs;
+    let max = state.config.limits.max_batch_pairs;
 
     if payload.items.len() > max {
         // TODO: think where this error belongs
@@ -325,7 +325,7 @@ pub async fn top_liked(
     };
 
     // Validate and clamp limit parameter
-    let max = state.config.max_top_liked_limit as i64;
+    let max = state.config.limits.max_top_liked_limit as i64;
     let limit = query.limit.unwrap_or(max).clamp(1, max);
 
     // Fetch top liked content from the like service based on the provided filters
@@ -389,9 +389,7 @@ mod tests {
         let like_service = Arc::new(LikeService::new(
             mock_like_repo,
             mock_cache_repo.clone(),
-            config.cache_ttl_like_counts_secs,
-            config.cache_ttl_content_validation_secs,
-            config.cache_ttl_user_status_secs,
+            config.cache.clone(),
         ));
         let profile_client =
             Arc::new(ProfileClient::new(reqwest::Client::new(), "http://mock-profile"));

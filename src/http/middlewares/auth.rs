@@ -41,7 +41,7 @@ pub async fn require_auth(
     match result {
         Ok(user_id) => {
             // Populate cache
-            let ttl = state.config.cache_ttl_user_status_secs;
+            let ttl = state.config.cache.user_status_ttl_secs;
             let _ = state.cache.set_token(token, user_id, ttl).await;
 
             // Inject user_id into request extensions for handlers to use
@@ -77,7 +77,7 @@ mod tests {
 
     use crate::{
         clients::profile::ProfileClient,
-        config::{AppConfig, ContentTypeRegistry},
+        config::{AppConfig, CacheConfig, ContentTypeRegistry},
         like_service::LikeService,
         repository::{cache_repo::MockCacheRepository, like_repo::MockLikeRepository},
     };
@@ -116,9 +116,7 @@ mod tests {
         let like_service = Arc::new(LikeService::new(
             mock_like_repo,
             mock_cache_arc.clone(),
-            config.cache_ttl_like_counts_secs,
-            config.cache_ttl_content_validation_secs,
-            config.cache_ttl_user_status_secs,
+            config.cache.clone(),
         ));
         let profile_client =
             Arc::new(ProfileClient::new(reqwest::Client::new(), mock_server.uri()));
@@ -250,9 +248,7 @@ mod tests {
             like_service: Arc::new(LikeService::new(
                 Arc::new(MockLikeRepository::new()),
                 Arc::new(MockCacheRepository::new()),
-                300,
-                300,
-                300,
+                CacheConfig::default(),
             )),
             profile_client: Arc::new(ProfileClient::new(reqwest::Client::new(), mock_server.uri())),
             cache: Arc::new(mock_cache),

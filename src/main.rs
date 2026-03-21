@@ -31,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize logging based on the loaded configuration.
     tracing_subscriber::registry()
-        .with(EnvFilter::new(&config.log_level))
+        .with(EnvFilter::new(&config.app.log_level))
         .with(
             fmt::layer()
                 .json()
@@ -54,10 +54,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("Failed to initialize database pools");
 
     // Initialize Redis connection pool for caching
-    let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
+    let redis_pool = deadpool_redis::Config::from_url(&config.redis.url)
         .builder()
         .expect("Invalid Redis URL")
-        .max_size(config.redis_pool_size)
+        .max_size(config.redis.pool_size)
         .runtime(Runtime::Tokio1)
         .build()
         .expect("Failed to create Redis pool"); // TODO: handle Redis connection errors gracefully
@@ -65,17 +65,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create Like Repository, and Like Service
     let like_repo = PgLikeRepository::new(writer_pool.clone(), reader_pool.clone()); // Cloning is cheap for PgPool
     let cache_repo = Arc::new(RedisCacheRepository::new(redis_pool));
-    let like_service = LikeService::new(
-        Arc::new(like_repo),
-        cache_repo.clone(),
-        config.cache_ttl_like_counts_secs,
-        config.cache_ttl_content_validation_secs,
-        config.cache_ttl_user_status_secs,
-    );
+    let like_service =
+        LikeService::new(Arc::new(like_repo), cache_repo.clone(), config.cache.clone());
 
     // Initialize HTTP client and Profile API client
     let http_client = reqwest::Client::new();
-    let profile_client = ProfileClient::new(http_client.clone(), config.profile_api_url.clone());
+    let profile_client =
+        ProfileClient::new(http_client.clone(), config.clients.profile_url.clone());
 
     // Create shared application state
     let state = AppState {
@@ -88,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create the HTTP router with the application state
     let app = http::router::create_router(state);
-    let port = server_utils::resolve_port(config.http_port);
+    let port = server_utils::resolve_port(config.server.port);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await?;
 
@@ -97,11 +93,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Serve the application with graceful shutdown
     let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
 
-    let shutdown_timeout = Duration::from_secs(config.shutdown_timeout_secs);
+    let shutdown_timeout = Duration::from_secs(config.server.shutdown_timeout_secs);
 
     // TODO: flush metrics, close database connections, etc. during shutdown
 
-    if let Err(e) = tokio::time::timeout(shutdown_timeout, server).await {
+    if let Err(_) = tokio::time::timeout(shutdown_timeout, server).await {
         tracing::warn!(
             service = "social-api",
             "Graceful shutdown timed out after {} seconds. Forcing exit.",

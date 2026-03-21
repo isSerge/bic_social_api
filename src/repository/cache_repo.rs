@@ -31,6 +31,21 @@ pub trait CacheRepository: Send + Sync {
     /// Sets the user_id associated with a token in the cache with a TTL.
     async fn set_token(&self, token: &str, user_id: Uuid, ttl_secs: u64) -> Result<(), RepoError>;
 
+    /// Returns true if the content item has been validated as existing. Returns None on cache miss.
+    async fn get_content_exists(
+        &self,
+        content_type: ContentType,
+        content_id: Uuid,
+    ) -> Result<Option<bool>, RepoError>;
+
+    /// Marks a content item as validated to exist, with a TTL.
+    async fn set_content_exists(
+        &self,
+        content_type: ContentType,
+        content_id: Uuid,
+        ttl_secs: u64,
+    ) -> Result<(), RepoError>;
+
     // TODO: add methods for leaderboard, rate limiting, etc.
 }
 
@@ -55,6 +70,11 @@ impl RedisCacheRepository {
     }
 
     // TODO: add similar helpers for other cache types (leaderboard, etc.)
+
+    /// Helper function to generate Redis keys for content existence validation.
+    fn content_exists_key(content_type: ContentType, content_id: Uuid) -> String {
+        format!("content_exists:{}:{}", content_type.0, content_id)
+    }
 
     /// Helper function to get a Redis connection, with error handling that allows the app to operate without cache if Redis is unavailable.
     async fn get_connection(&self) -> Option<Connection> {
@@ -147,6 +167,48 @@ impl CacheRepository for RedisCacheRepository {
 
         Ok(())
     }
+
+    async fn get_content_exists(
+        &self,
+        content_type: ContentType,
+        content_id: Uuid,
+    ) -> Result<Option<bool>, RepoError> {
+        // Return Ok(None) to indicate cache miss if cannot connect
+        let Some(mut conn) = self.get_connection().await else {
+            return Ok(None);
+        };
+
+        let key = Self::content_exists_key(content_type, content_id);
+
+        match conn.exists::<_, bool>(&key).await {
+            Ok(true) => Ok(Some(true)),
+            Ok(false) => Ok(None),
+            Err(e) => {
+                tracing::warn!(error = %e, key = %key, "Redis EXISTS failed");
+                Ok(None)
+            }
+        }
+    }
+
+    async fn set_content_exists(
+        &self,
+        content_type: ContentType,
+        content_id: Uuid,
+        ttl_secs: u64,
+    ) -> Result<(), RepoError> {
+        // Return Ok(()) to indicate cache miss if cannot connect
+        let Some(mut conn) = self.get_connection().await else {
+            return Ok(());
+        };
+
+        let key = Self::content_exists_key(content_type, content_id);
+
+        if let Err(e) = conn.set_ex::<_, _, ()>(&key, 1u8, ttl_secs).await {
+            tracing::warn!(error = %e, key = %key, "Redis SETEX content_exists failed");
+        }
+
+        Ok(())
+    }
 }
 
 // NOTE: Happy path tests are covered by integration tests
@@ -206,6 +268,25 @@ mod tests {
 
         // This should NOT return a RepoError. It should return Ok(()) because the DB write already succeeded anyway.
         let result = cache.set_token("some_token", Uuid::new_v4(), 300).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_get_content_exists_degrades_gracefully_when_redis_is_down() {
+        let cache = RedisCacheRepository::new(broken_redis_pool());
+
+        let result = cache.get_content_exists(content_type("post"), Uuid::new_v4()).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_set_content_exists_degrades_gracefully_when_redis_is_down() {
+        let cache = RedisCacheRepository::new(broken_redis_pool());
+
+        let result = cache.set_content_exists(content_type("post"), Uuid::new_v4(), 3600).await;
 
         assert!(result.is_ok());
     }

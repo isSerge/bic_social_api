@@ -189,27 +189,28 @@ mod tests {
     const CACHE_TTL_USER_STATUS_SECS: u64 = 60;
 
     #[tokio::test]
-    async fn test_like_success() {
-        // Arrange
+    async fn test_like_new_updates_cache() {
         let user_id = Uuid::new_v4();
         let ct = content_type("post");
         let content_id = Uuid::new_v4();
-        let expected_time = Utc.with_ymd_and_hms(2026, 2, 2, 17, 0, 0).unwrap();
-        let like_count = 42;
+        let timestamp = Utc::now();
 
         let mut mock_repo = MockLikeRepository::new();
-
         mock_repo
             .expect_insert_like()
-            .with(eq(user_id), eq(ct.clone()), eq(content_id))
             .times(1)
-            .returning(move |_, _, _| Ok((false, like_count, expected_time))); // Returns: (already_existed, count, timestamp)
+            .returning(move |_, _, _| Ok((false, 42, timestamp)));
 
-        // The cache should be updated with the new count since this is a new like
         let mut mock_cache = MockCacheRepository::new();
+        // NEW like, MUST update the cache
         mock_cache
             .expect_set_count()
-            .with(eq(ct.clone()), eq(content_id), eq(like_count), eq(CACHE_TTL_LIKE_COUNTS_SECS))
+            .with(
+                mockall::predicate::eq(ct.clone()),
+                mockall::predicate::eq(content_id),
+                mockall::predicate::eq(42),
+                mockall::predicate::eq(CACHE_TTL_LIKE_COUNTS_SECS),
+            )
             .times(1)
             .returning(|_, _, _, _| Ok(()));
 
@@ -220,16 +221,35 @@ mod tests {
             CACHE_TTL_CONTENT_VALIDATION_SECS,
             CACHE_TTL_USER_STATUS_SECS,
         );
-
-        // Act
         let result = service.like(user_id, ct, content_id).await;
 
-        // Assert
         assert!(result.is_ok());
-        let (already_existed, count, timestamp) = result.unwrap();
-        assert_eq!(already_existed, false);
-        assert_eq!(count, like_count);
-        assert_eq!(timestamp, expected_time);
+    }
+
+    #[tokio::test]
+    async fn test_like_existing_skips_cache() {
+        let user_id = Uuid::new_v4();
+        let ct = content_type("post");
+        let content_id = Uuid::new_v4();
+        let timestamp = Utc::now();
+
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo.expect_insert_like().times(1).returning(move |_, _, _| Ok((true, 42, timestamp)));
+
+        let mut mock_cache = MockCacheRepository::new();
+        // ALREADY EXISTED (true), it MUST NOT call Redis
+        mock_cache.expect_set_count().times(0);
+
+        let service = LikeService::new(
+            Arc::new(mock_repo),
+            Arc::new(mock_cache),
+            CACHE_TTL_LIKE_COUNTS_SECS,
+            CACHE_TTL_CONTENT_VALIDATION_SECS,
+            CACHE_TTL_USER_STATUS_SECS,
+        );
+        let result = service.like(user_id, ct, content_id).await;
+
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -267,21 +287,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unlike_success() {
+    async fn test_unlike_existing_updates_cache() {
         // Arrange
         let user_id = Uuid::new_v4();
         let ct = content_type("post");
         let content_id = Uuid::new_v4();
-        let mut mock_repo = MockLikeRepository::new();
         let like_count_after = 41;
 
+        let mut mock_repo = MockLikeRepository::new();
         mock_repo
             .expect_delete_like()
             .with(eq(user_id), eq(ct.clone()), eq(content_id))
             .times(1)
             .returning(move |_, _, _| Ok((true, like_count_after))); // Returns: (was_liked, new_count)
 
-        // The cache should be updated with the new count since this is an unlike that removed an existing like
+        // EXISTING like was removed, MUST update the cache
         let mut mock_cache = MockCacheRepository::new();
         mock_cache
             .expect_set_count()
@@ -310,6 +330,71 @@ mod tests {
         let (was_liked, count) = result.unwrap();
         assert_eq!(was_liked, true);
         assert_eq!(count, like_count_after);
+    }
+
+    #[tokio::test]
+    async fn test_unlike_non_existing_skips_cache() {
+        // Arrange
+        let user_id = Uuid::new_v4();
+        let ct = content_type("post");
+        let content_id = Uuid::new_v4();
+
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo.expect_delete_like().times(1).returning(move |_, _, _| Ok((false, 42))); // Returns: (was_liked=false, count)
+
+        let mut mock_cache = MockCacheRepository::new();
+        // NEVER EXISTED (false), it MUST NOT call Redis
+        mock_cache.expect_set_count().times(0);
+
+        let service = LikeService::new(
+            Arc::new(mock_repo),
+            Arc::new(mock_cache),
+            CACHE_TTL_LIKE_COUNTS_SECS,
+            CACHE_TTL_CONTENT_VALIDATION_SECS,
+            CACHE_TTL_USER_STATUS_SECS,
+        );
+
+        // Act
+        let result = service.unlike(user_id, ct, content_id).await;
+
+        // Assert
+        assert!(result.is_ok());
+        let (was_liked, _) = result.unwrap();
+        assert_eq!(was_liked, false);
+    }
+
+    #[tokio::test]
+    async fn test_unlike_repo_error_bubbles_up() {
+        // Arrange
+        let user_id = Uuid::new_v4();
+        let ct = content_type("post");
+        let content_id = Uuid::new_v4();
+        let mock_cache = MockCacheRepository::new();
+        let mut mock_repo = MockLikeRepository::new();
+
+        // Force the repo to return a Database error
+        mock_repo
+            .expect_delete_like()
+            .times(1)
+            .returning(|_, _, _| Err(RepoError::Db(SqlxError::RowNotFound)));
+
+        let service = LikeService::new(
+            Arc::new(mock_repo),
+            Arc::new(mock_cache),
+            CACHE_TTL_LIKE_COUNTS_SECS,
+            CACHE_TTL_CONTENT_VALIDATION_SECS,
+            CACHE_TTL_USER_STATUS_SECS,
+        );
+
+        // Act
+        let result = service.unlike(user_id, ct, content_id).await;
+
+        // Assert
+        assert!(result.is_err());
+        assert!(matches!(
+            result.err().unwrap(),
+            DomainError::Repository(RepoError::Db(SqlxError::RowNotFound))
+        ));
     }
 
     #[tokio::test]

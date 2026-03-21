@@ -4,7 +4,7 @@ use sqlx::{PgPool, postgres::PgPoolOptions};
 
 use crate::config::AppConfig;
 
-mod cache_repo;
+pub mod cache_repo;
 pub mod error;
 pub mod like_repo;
 

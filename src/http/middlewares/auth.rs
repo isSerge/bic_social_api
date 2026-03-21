@@ -69,7 +69,7 @@ mod tests {
         clients::profile::ProfileClient,
         config::{AppConfig, ContentTypeRegistry},
         like_service::LikeService,
-        repository::like_repo::MockLikeRepository,
+        repository::{cache_repo::MockCacheRepository, like_repo::MockLikeRepository},
     };
 
     use super::*;
@@ -94,7 +94,15 @@ mod tests {
 
         let config = Arc::new(AppConfig::default());
         let registry = Arc::new(ContentTypeRegistry::default());
-        let like_service = Arc::new(LikeService::new(Arc::new(MockLikeRepository::new())));
+        let mock_cache = Arc::new(MockCacheRepository::new());
+        let mock_like_repo = Arc::new(MockLikeRepository::new());
+        let like_service = Arc::new(LikeService::new(
+            mock_like_repo,
+            mock_cache,
+            config.cache_ttl_like_counts_secs,
+            config.cache_ttl_content_validation_secs,
+            config.cache_ttl_user_status_secs,
+        ));
         let profile_client =
             Arc::new(ProfileClient::new(reqwest::Client::new(), mock_server.uri()));
 

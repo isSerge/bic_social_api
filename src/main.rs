@@ -10,6 +10,7 @@ pub mod server_utils;
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
+use deadpool_redis::Runtime;
 use tokio::{net::TcpListener, signal};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -18,7 +19,7 @@ use crate::{
     config::{AppConfig, ContentTypeRegistry},
     http::AppState,
     like_service::LikeService,
-    repository::like_repo::PgLikeRepository,
+    repository::{cache_repo::RedisCacheRepository, like_repo::PgLikeRepository},
 };
 
 #[tokio::main]
@@ -52,9 +53,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .expect("Failed to initialize database pools");
 
+    // Initialize Redis connection pool for caching
+    let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
+        .create_pool(Some(Runtime::Tokio1))
+        .expect("Failed to create Redis pool"); // TODO: handle Redis connection errors gracefully
+
     // Create Like Repository, and Like Service
     let like_repo = PgLikeRepository::new(writer_pool.clone(), reader_pool.clone()); // Cloning is cheap for PgPool
-    let like_service = LikeService::new(Arc::new(like_repo));
+    let cache_repo = RedisCacheRepository::new(redis_pool);
+    let like_service = LikeService::new(
+        Arc::new(like_repo),
+        Arc::new(cache_repo),
+        config.cache_ttl_like_counts_secs,
+        config.cache_ttl_content_validation_secs,
+        config.cache_ttl_user_status_secs,
+    );
 
     // Initialize HTTP client and Profile API client
     let http_client = reqwest::Client::new();

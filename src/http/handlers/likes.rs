@@ -372,15 +372,27 @@ mod tests {
         domain::{ContentType, LikeRecord},
         http::AppState,
         like_service::LikeService,
-        repository::like_repo::MockLikeRepository,
+        repository::{cache_repo::MockCacheRepository, like_repo::MockLikeRepository},
     };
 
     // --- Helper: Setup Test App ---
-    fn app_for_test(mock_repo: MockLikeRepository, test_user_id: Uuid) -> Router {
+    fn app_for_test(
+        mock_repo: MockLikeRepository,
+        mock_cache_repo: MockCacheRepository,
+        test_user_id: Uuid,
+    ) -> Router {
         // Use a dummy config and a manually seeded registry to prevent flaky env-var tests
         let config = Arc::new(AppConfig::default());
         let registry = Arc::new(ContentTypeRegistry::default());
-        let like_service = Arc::new(LikeService::new(Arc::new(mock_repo)));
+        let mock_like_repo = Arc::new(mock_repo);
+        let mock_cache_repo = Arc::new(mock_cache_repo);
+        let like_service = Arc::new(LikeService::new(
+            mock_like_repo,
+            mock_cache_repo,
+            config.cache_ttl_like_counts_secs,
+            config.cache_ttl_content_validation_secs,
+            config.cache_ttl_user_status_secs,
+        ));
         let profile_client =
             Arc::new(ProfileClient::new(reqwest::Client::new(), "http://mock-profile"));
 
@@ -409,20 +421,43 @@ mod tests {
         serde_json::from_slice(&body_bytes).expect("Failed to parse JSON")
     }
 
+    // TODO: move it somewhere common
+    // Helper to create a dummy ContentType
+    fn content_type(raw: &str) -> ContentType {
+        ContentType(Arc::from(raw.to_string()))
+    }
+
+    const CACHE_TTL_LIKE_COUNTS_SECS: u64 = 300;
+
     #[tokio::test]
     async fn test_like_handler_success() {
         let test_user_id = Uuid::new_v4();
         let content_id = Uuid::new_v4();
         let timestamp = Utc::now();
+        let content_type = content_type("post");
+        let like_count = 42;
 
         // Simulate a new like with count 42
         let mut mock_repo = MockLikeRepository::new();
         mock_repo
             .expect_insert_like()
             .times(1)
-            .returning(move |_, _, _| Ok((false, 42, timestamp)));
+            .returning(move |_, _, _| Ok((false, like_count, timestamp)));
 
-        let app = app_for_test(mock_repo, test_user_id);
+        // Cache repo should call set_count with the new count
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_set_count()
+            .with(
+                eq(content_type.clone()),
+                eq(content_id),
+                eq(like_count),
+                eq(CACHE_TTL_LIKE_COUNTS_SECS),
+            )
+            .times(1)
+            .returning(|_, _, _, _| Ok(()));
+
+        let app = app_for_test(mock_repo, mock_cache, test_user_id);
         let payload = serde_json::json!({ "content_type": "post", "content_id": content_id });
 
         let request = Request::builder()
@@ -438,7 +473,7 @@ mod tests {
         let body: serde_json::Value = parse_json(response).await;
         assert_eq!(body["liked"], true);
         assert_eq!(body["already_existed"], false);
-        assert_eq!(body["count"], 42);
+        assert_eq!(body["count"], like_count);
     }
 
     #[tokio::test]
@@ -450,7 +485,10 @@ mod tests {
         let mut mock_repo = MockLikeRepository::new();
         mock_repo.expect_insert_like().times(0);
 
-        let app = app_for_test(mock_repo, test_user_id);
+        // Cache repo should not be called
+        let mock_cache = MockCacheRepository::new();
+
+        let app = app_for_test(mock_repo, mock_cache, test_user_id);
 
         let payload = serde_json::json!({
             "content_type": "invalid_type",
@@ -478,12 +516,31 @@ mod tests {
     async fn test_unlike_handler_success() {
         let test_user_id = Uuid::new_v4();
         let content_id = Uuid::new_v4();
+        let content_type = content_type("post");
+        let like_count_after = 41;
 
         // Simulate a content item that was previously liked and now has 41 likes after unliking
         let mut mock_repo = MockLikeRepository::new();
-        mock_repo.expect_delete_like().times(1).returning(|_, _, _| Ok((true, 41)));
+        mock_repo
+            .expect_delete_like()
+            .times(1)
+            .returning(move |_, _, _| Ok((true, like_count_after)));
 
-        let app = app_for_test(mock_repo, test_user_id);
+        // Cache repo should call set_count with the new count after unlike
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_set_count()
+            .with(
+                eq(content_type.clone()),
+                eq(content_id),
+                eq(like_count_after),
+                eq(CACHE_TTL_LIKE_COUNTS_SECS),
+            )
+            .times(1)
+            .returning(|_, _, _, _| Ok(()));
+
+        let app = app_for_test(mock_repo, mock_cache, test_user_id);
+
         let request = Request::builder()
             .method(http::Method::DELETE)
             .uri(format!("/v1/likes/post/{}", content_id))
@@ -496,19 +553,35 @@ mod tests {
         let body: serde_json::Value = parse_json(response).await;
         assert_eq!(body["liked"], false);
         assert_eq!(body["was_liked"], true);
-        assert_eq!(body["count"], 41);
+        assert_eq!(body["count"], like_count_after);
     }
 
     #[tokio::test]
     async fn test_get_count_handler_success() {
         let test_user_id = Uuid::new_v4();
         let content_id = Uuid::new_v4();
+        let like_count = 150;
 
         // Simulate a content item with 150 likes
         let mut mock_repo = MockLikeRepository::new();
-        mock_repo.expect_get_count().times(1).returning(|_, _| Ok(150));
+        mock_repo.expect_get_count().times(1).returning(move |_, _| Ok(like_count));
 
-        let app = app_for_test(mock_repo, test_user_id);
+        let mut mock_cache = MockCacheRepository::new();
+        // Cache repo should call get_count and return None to indicate cache miss
+        mock_cache.expect_get_count().times(1).returning(|_, _| Ok(None));
+        // Cache repo should call set_count with the count from repo after cache miss
+        mock_cache
+            .expect_set_count()
+            .with(
+                eq(content_type("post")),
+                eq(content_id),
+                eq(like_count),
+                eq(CACHE_TTL_LIKE_COUNTS_SECS),
+            )
+            .times(1)
+            .returning(|_, _, _, _| Ok(()));
+
+        let app = app_for_test(mock_repo, mock_cache, test_user_id);
 
         let request = Request::builder()
             .method(http::Method::GET)
@@ -523,7 +596,7 @@ mod tests {
         let body: serde_json::Value = parse_json(response).await;
         assert_eq!(body["content_type"], "post");
         assert_eq!(body["content_id"], content_id.to_string());
-        assert_eq!(body["count"], 150);
+        assert_eq!(body["count"], like_count);
     }
 
     #[tokio::test]
@@ -536,7 +609,10 @@ mod tests {
         let mut mock_repo = MockLikeRepository::new();
         mock_repo.expect_get_status().times(1).returning(move |_, _, _| Ok(Some(timestamp)));
 
-        let app = app_for_test(mock_repo, test_user_id);
+        let mock_cache = MockCacheRepository::new();
+
+        let app = app_for_test(mock_repo, mock_cache, test_user_id);
+
         let request = Request::builder()
             .method(http::Method::GET)
             .uri(format!("/v1/likes/post/{}/status", content_id))
@@ -561,7 +637,10 @@ mod tests {
         let mut mock_repo = MockLikeRepository::new();
         mock_repo.expect_batch_get_counts().times(1).returning(|_| Ok(vec![10, 20]));
 
-        let app = app_for_test(mock_repo, test_user_id);
+        let mock_cache = MockCacheRepository::new();
+
+        let app = app_for_test(mock_repo, mock_cache, test_user_id);
+
         let payload = serde_json::json!({
             "items": [
                 { "content_type": "post", "content_id": id1 },
@@ -594,7 +673,9 @@ mod tests {
         let mut mock_repo = MockLikeRepository::new();
         mock_repo.expect_batch_get_counts().times(0);
 
-        let app = app_for_test(mock_repo, test_user_id);
+        let mock_cache = MockCacheRepository::new();
+
+        let app = app_for_test(mock_repo, mock_cache, test_user_id);
 
         // Generate 101 items
         let items: Vec<_> = (0..101)
@@ -624,7 +705,10 @@ mod tests {
         // Simulate top liked content with no specific content type and a 7-day window, returning an empty list for simplicity
         mock_repo.expect_get_top_liked().times(1).returning(|_, _, _| Ok(vec![]));
 
-        let app = app_for_test(mock_repo, test_user_id);
+        let mock_cache = MockCacheRepository::new();
+
+        let app = app_for_test(mock_repo, mock_cache, test_user_id);
+
         let request = Request::builder()
             .method(http::Method::GET)
             .uri("/v1/likes/top?window=7d")
@@ -646,7 +730,10 @@ mod tests {
         let mut mock_repo = MockLikeRepository::new();
         mock_repo.expect_get_top_liked().times(0);
 
-        let app = app_for_test(mock_repo, test_user_id);
+        let mock_cache = MockCacheRepository::new();
+
+        let app = app_for_test(mock_repo, mock_cache, test_user_id);
+
         let request = Request::builder()
             .method(http::Method::GET)
             .uri("/v1/likes/top?window=5m") // invalid
@@ -658,12 +745,6 @@ mod tests {
 
         let body: serde_json::Value = parse_json(response).await;
         assert_eq!(body["error"]["code"], "INVALID_TIME_WINDOW");
-    }
-
-    // TODO: move it somewhere common
-    // Helper to create a dummy ContentType
-    fn content_type(raw: &str) -> ContentType {
-        ContentType(Arc::from(raw.to_string()))
     }
 
     #[tokio::test]
@@ -706,7 +787,9 @@ mod tests {
                 ])
             });
 
-        let app = app_for_test(mock_repo, test_user_id);
+        let mock_cache = MockCacheRepository::new();
+
+        let app = app_for_test(mock_repo, mock_cache, test_user_id);
 
         let request = Request::builder()
             .method(http::Method::GET)
@@ -744,7 +827,9 @@ mod tests {
         let mut mock_repo = MockLikeRepository::new();
         mock_repo.expect_get_user_likes().times(0);
 
-        let app = app_for_test(mock_repo, test_user_id);
+        let mock_cache = MockCacheRepository::new();
+
+        let app = app_for_test(mock_repo, mock_cache, test_user_id);
 
         let request = Request::builder()
             .method(http::Method::GET)
@@ -773,7 +858,9 @@ mod tests {
             .times(1)
             .returning(|_, _, _, _| Ok(vec![])); // Return empty for simplicity
 
-        let app = app_for_test(mock_repo, test_user_id);
+        let mock_cache = MockCacheRepository::new();
+
+        let app = app_for_test(mock_repo, mock_cache, test_user_id);
 
         let request = Request::builder()
             .method(http::Method::GET)

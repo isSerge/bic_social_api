@@ -64,7 +64,7 @@ mod tests {
         clients::{content::MockContentValidationClient, profile::MockProfileValidationClient},
         config::{AppConfig, ContentTypeRegistry},
         repository::{cache_repo::MockCacheRepository, like_repo::MockLikeRepository},
-        service::like_service::LikeService,
+        service::{broadcast::Broadcaster, like_service::LikeService},
     };
 
     use super::*;
@@ -82,11 +82,13 @@ mod tests {
     /// Helper function to create an app with the rate limiter middleware and a mock cache repository for testing
     fn app_for_test(mock_cache: Arc<MockCacheRepository>) -> Router {
         let config = Arc::new(AppConfig::default());
+        let broadcaster = Arc::new(Broadcaster::new(config.server.sse_channel_capacity));
         let like_service = Arc::new(LikeService::new(
+            config.cache,
             Arc::new(MockLikeRepository::new()),
             mock_cache.clone(),
             Arc::new(MockContentValidationClient::new()),
-            config.cache,
+            Arc::clone(&broadcaster),
         ));
 
         let state = AppState {
@@ -95,6 +97,7 @@ mod tests {
             like_service,
             profile_client: Arc::new(MockProfileValidationClient::new()),
             cache: mock_cache,
+            broadcaster,
         };
 
         async fn dummy_handler() -> impl IntoResponse {

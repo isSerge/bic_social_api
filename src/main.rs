@@ -22,7 +22,7 @@ use crate::{
         cache_repo::RedisCacheRepository,
         like_repo::{LikeRepository, PgLikeRepository},
     },
-    service::{leaderboard::LeaderboardWorker, like_service::LikeService},
+    service::{broadcast::Broadcaster, leaderboard::LeaderboardWorker, like_service::LikeService},
 };
 
 #[tokio::main]
@@ -77,8 +77,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.clients.content_url.clone(),
         config.circuit_breaker,
     ));
-    let like_service =
-        LikeService::new(Arc::clone(&like_repo), cache_repo.clone(), content_client, config.cache);
+
+    // Broadcaster for real-time updates (SSE)
+    let broadcaster = Arc::new(Broadcaster::new(config.server.sse_channel_capacity));
+
+    // Create LikeService with all dependencies
+    let like_service = LikeService::new(
+        config.cache,
+        Arc::clone(&like_repo),
+        cache_repo.clone(),
+        content_client,
+        Arc::clone(&broadcaster),
+    );
+
+    // Initialize Profile API client for token validation in the auth middleware
     let profile_client = ProfileClient::new(
         http_client.clone(),
         config.clients.profile_url.clone(),
@@ -92,6 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         like_service: Arc::new(like_service),
         profile_client: Arc::new(profile_client),
         cache: cache_repo,
+        broadcaster,
     };
 
     // Create the background worker

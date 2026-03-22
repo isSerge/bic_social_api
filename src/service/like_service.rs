@@ -6,8 +6,11 @@ use uuid::Uuid;
 use crate::clients::content::ContentValidationClient;
 use crate::clients::error::ClientError;
 use crate::config::CacheConfig;
-use crate::domain::{ContentType, DomainError, LikeRecord, PaginationCursor};
+use crate::domain::{
+    ContentType, DomainError, LikeEvent, LikeEventKind, LikeRecord, PaginationCursor,
+};
 use crate::repository::{cache_repo::CacheRepository, like_repo::LikeRepository};
+use crate::service::broadcast::Broadcaster;
 
 /// Orchestrates authentication/content validation and like repository operations.
 pub struct LikeService {
@@ -15,17 +18,18 @@ pub struct LikeService {
     cache: Arc<dyn CacheRepository>,
     content_client: Arc<dyn ContentValidationClient>,
     config: CacheConfig,
-    // TODO: include clients and broadcaster
+    broadcaster: Arc<Broadcaster>,
 }
 
 impl LikeService {
     pub fn new(
+        config: CacheConfig,
         repo: Arc<dyn LikeRepository>,
         cache: Arc<dyn CacheRepository>,
         content_client: Arc<dyn ContentValidationClient>,
-        config: CacheConfig,
+        broadcaster: Arc<Broadcaster>,
     ) -> Self {
-        Self { repo, cache, content_client, config }
+        Self { repo, cache, content_client, config, broadcaster }
     }
 
     /// Handles a like operation: validates the token, checks content existence, and records the like.
@@ -66,15 +70,28 @@ impl LikeService {
         let (already_existed, new_count, timestamp) =
             self.repo.insert_like(user_id, content_type.clone(), content_id).await?;
 
-        // TODO: broadcast event to SSE subscribers
-
         // Update cache if this was a new like
         if !already_existed {
             let _ = self
                 .cache
-                .set_count(content_type, content_id, new_count, self.config.like_counts_ttl_secs)
+                .set_count(
+                    content_type.clone(),
+                    content_id,
+                    new_count,
+                    self.config.like_counts_ttl_secs,
+                )
                 .await;
         }
+
+        // Broadcast the like event to subscribers
+        self.broadcaster.broadcast(LikeEvent {
+            event: LikeEventKind::Like,
+            user_id,
+            content_type,
+            content_id,
+            count: new_count,
+            timestamp,
+        });
 
         Ok((already_existed, new_count, timestamp))
     }
@@ -90,14 +107,27 @@ impl LikeService {
         let (was_liked, new_count) =
             self.repo.delete_like(user_id, content_type.clone(), content_id).await?;
 
-        // TODO: broadcast
-
         // Update cache if there was an actual like removed
         if was_liked {
             let _ = self
                 .cache
-                .set_count(content_type, content_id, new_count, self.config.like_counts_ttl_secs)
+                .set_count(
+                    content_type.clone(),
+                    content_id,
+                    new_count,
+                    self.config.like_counts_ttl_secs,
+                )
                 .await;
+
+            // Broadcast the unlike event to subscribers
+            self.broadcaster.broadcast(LikeEvent {
+                event: LikeEventKind::Unlike,
+                user_id,
+                content_type,
+                content_id,
+                count: new_count,
+                timestamp: Utc::now(),
+            });
         }
 
         Ok((was_liked, new_count))
@@ -253,10 +283,11 @@ mod tests {
             .returning(|_, _, _, _| Ok(()));
 
         let service = LikeService::new(
+            config,
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
-            config,
+            Arc::new(Broadcaster::new(16)),
         );
         let result = service.like(user_id, ct, content_id).await;
 
@@ -279,10 +310,11 @@ mod tests {
         mock_cache.expect_set_count().times(0);
 
         let service = LikeService::new(
+            CacheConfig::default(),
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
-            CacheConfig::default(),
+            Arc::new(Broadcaster::new(16)),
         );
         let result = service.like(user_id, ct, content_id).await;
 
@@ -307,10 +339,11 @@ mod tests {
         mock_cache.expect_get_content_exists().times(1).returning(|_, _| Ok(Some(true)));
 
         let service = LikeService::new(
+            CacheConfig::default(),
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
-            CacheConfig::default(),
+            Arc::new(Broadcaster::new(16)),
         );
 
         // Act
@@ -354,10 +387,11 @@ mod tests {
             .returning(|_, _, _, _| Ok(()));
 
         let service = LikeService::new(
+            config,
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
-            config,
+            Arc::new(Broadcaster::new(16)),
         );
 
         // Act
@@ -385,10 +419,11 @@ mod tests {
         mock_cache.expect_set_count().times(0);
 
         let service = LikeService::new(
+            CacheConfig::default(),
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
-            CacheConfig::default(),
+            Arc::new(Broadcaster::new(16)),
         );
 
         // Act
@@ -416,10 +451,11 @@ mod tests {
             .returning(|_, _, _| Err(RepoError::Db(SqlxError::RowNotFound)));
 
         let service = LikeService::new(
+            CacheConfig::default(),
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
-            CacheConfig::default(),
+            Arc::new(Broadcaster::new(16)),
         );
 
         // Act
@@ -451,10 +487,11 @@ mod tests {
             .returning(|_, _| Ok(Some(99)));
 
         let service = LikeService::new(
+            CacheConfig::default(),
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
-            CacheConfig::default(),
+            Arc::new(Broadcaster::new(16)),
         );
 
         let result = service.get_count(ct, content_id).await;
@@ -491,10 +528,11 @@ mod tests {
             .returning(|_, _, _, _| Ok(()));
 
         let service = LikeService::new(
+            config,
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
-            config,
+            Arc::new(Broadcaster::new(16)),
         );
 
         let result = service.get_count(ct, content_id).await;
@@ -519,10 +557,11 @@ mod tests {
             .returning(move |_, _, _| Ok(Some(expected_time)));
 
         let service = LikeService::new(
+            CacheConfig::default(),
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
-            CacheConfig::default(),
+            Arc::new(Broadcaster::new(16)),
         );
 
         // Act
@@ -552,10 +591,11 @@ mod tests {
             .returning(|_| Ok(vec![100, 200]));
 
         let service = LikeService::new(
+            CacheConfig::default(),
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
-            CacheConfig::default(),
+            Arc::new(Broadcaster::new(16)),
         );
 
         // Act
@@ -584,10 +624,11 @@ mod tests {
             .returning(move |_, _| Ok(vec![Some(ts)]));
 
         let service = LikeService::new(
+            CacheConfig::default(),
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
-            CacheConfig::default(),
+            Arc::new(Broadcaster::new(16)),
         );
 
         // Act
@@ -627,10 +668,11 @@ mod tests {
             });
 
         let service = LikeService::new(
+            CacheConfig::default(),
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
-            CacheConfig::default(),
+            Arc::new(Broadcaster::new(16)),
         );
 
         // Act
@@ -666,10 +708,11 @@ mod tests {
         mock_repo.expect_get_top_liked().times(0);
 
         let service = LikeService::new(
+            CacheConfig::default(),
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
-            CacheConfig::default(),
+            Arc::new(Broadcaster::new(16)),
         );
 
         let result = service.get_top_liked(Some(content_type.clone()), Some(since), limit).await;
@@ -698,10 +741,11 @@ mod tests {
         mock_repo.expect_get_top_liked().times(0);
 
         let service = LikeService::new(
+            CacheConfig::default(),
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
-            CacheConfig::default(),
+            Arc::new(Broadcaster::new(16)),
         );
 
         let result = service.get_top_liked(None, None, limit).await;
@@ -736,10 +780,11 @@ mod tests {
             .returning(move |_, _, _| Ok(vec![(ct1.clone(), id1, 1500), (ct2.clone(), id2, 900)]));
 
         let service = LikeService::new(
+            CacheConfig::default(),
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
-            CacheConfig::default(),
+            Arc::new(Broadcaster::new(16)),
         );
 
         let result = service.get_top_liked(None, None, limit).await;
@@ -774,10 +819,11 @@ mod tests {
             .returning(|_, _, _, _| Ok(vec![])); // Empty vec is fine for this assertion
 
         let service = LikeService::new(
+            CacheConfig::default(),
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
-            CacheConfig::default(),
+            Arc::new(Broadcaster::new(16)),
         );
         let result = service.get_user_likes(user_id, Some(content_type), Some(cursor), limit).await;
 
@@ -820,10 +866,11 @@ mod tests {
             .returning(|_, _| Ok(()));
 
         let service = LikeService::new(
+            config,
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(mock_content_client),
-            config,
+            Arc::new(Broadcaster::new(16)),
         );
 
         let result = service.like(user_id, ct, content_id).await;
@@ -859,10 +906,11 @@ mod tests {
         mock_content_client.expect_validate_content().times(0);
 
         let service = LikeService::new(
+            config,
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(mock_content_client),
-            config,
+            Arc::new(Broadcaster::new(16)),
         );
 
         let result = service.like(user_id, ct, content_id).await;

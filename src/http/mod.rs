@@ -4,7 +4,7 @@ use crate::{
     clients::profile::ProfileValidationClient,
     config::{AppConfig, ContentTypeRegistry},
     repository::cache_repo::CacheRepository,
-    service::like_service::LikeService,
+    service::{broadcast::Broadcaster, like_service::LikeService},
 };
 
 pub mod error;
@@ -25,4 +25,6 @@ pub struct AppState {
     pub profile_client: Arc<dyn ProfileValidationClient>,
     /// Cache repository for managing cached data
     pub cache: Arc<dyn CacheRepository>,
+    /// Broadcaster for real-time updates (SSE)
+    pub broadcaster: Arc<Broadcaster>,
 }

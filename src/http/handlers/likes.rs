@@ -367,13 +367,12 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::{
-        clients::content::MockContentValidationClient,
-        clients::profile::ProfileClient,
+        clients::{content::MockContentValidationClient, profile::ProfileClient},
         config::{AppConfig, ContentTypeRegistry},
         domain::{ContentType, LikeRecord},
         http::AppState,
         repository::{cache_repo::MockCacheRepository, like_repo::MockLikeRepository},
-        service::like_service::LikeService,
+        service::{broadcast::Broadcaster, like_service::LikeService},
     };
 
     // --- Helper: Setup Test App ---
@@ -387,11 +386,13 @@ mod tests {
         let registry = Arc::new(ContentTypeRegistry::default());
         let mock_like_repo = Arc::new(mock_repo);
         let mock_cache_repo = Arc::new(mock_cache_repo);
+        let broadcaster = Arc::new(Broadcaster::new(config.server.sse_channel_capacity));
         let like_service = Arc::new(LikeService::new(
+            config.cache,
             mock_like_repo,
             mock_cache_repo.clone(),
             Arc::new(MockContentValidationClient::new()),
-            config.cache,
+            Arc::clone(&broadcaster),
         ));
         let profile_client = Arc::new(ProfileClient::new(
             reqwest::Client::new(),
@@ -405,6 +406,7 @@ mod tests {
             like_service,
             profile_client,
             cache: mock_cache_repo,
+            broadcaster,
         };
 
         Router::new()

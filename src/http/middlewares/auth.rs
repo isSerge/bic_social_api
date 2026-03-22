@@ -72,11 +72,13 @@ mod tests {
     use uuid::Uuid;
 
     use crate::{
-        clients::content::MockContentValidationClient,
-        clients::profile::{MockProfileValidationClient, ProfileValidationClient},
+        clients::{
+            content::MockContentValidationClient,
+            profile::{MockProfileValidationClient, ProfileValidationClient},
+        },
         config::{AppConfig, ContentTypeRegistry},
         repository::{cache_repo::MockCacheRepository, like_repo::MockLikeRepository},
-        service::like_service::LikeService,
+        service::{broadcast::Broadcaster, like_service::LikeService},
     };
 
     use super::*;
@@ -89,11 +91,13 @@ mod tests {
         let config = Arc::new(AppConfig::default());
         let registry = Arc::new(ContentTypeRegistry::default());
         let mock_like_repo = Arc::new(MockLikeRepository::new());
+        let broadcaster = Arc::new(Broadcaster::new(config.server.sse_channel_capacity));
         let like_service = Arc::new(LikeService::new(
+            config.cache,
             mock_like_repo,
             mock_cache_arc.clone(),
             Arc::new(MockContentValidationClient::new()),
-            config.cache,
+            Arc::clone(&broadcaster),
         ));
 
         let state = AppState {
@@ -102,6 +106,7 @@ mod tests {
             like_service,
             profile_client,
             cache: mock_cache_arc.clone(),
+            broadcaster,
         };
 
         // A dummy handler to test the middleware - just returns the user_id from extensions if auth succeeds

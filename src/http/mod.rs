@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    clients::profile::ProfileClient,
+    clients::profile::ProfileValidationClient,
     config::{AppConfig, ContentTypeRegistry},
     repository::cache_repo::CacheRepository,
     service::like_service::LikeService,
@@ -22,7 +22,7 @@ pub struct AppState {
     /// Service for managing likes, backed by a PostgreSQL repository.
     pub like_service: Arc<LikeService>,
     /// Profile API client for validating user tokens
-    pub profile_client: Arc<ProfileClient>,
+    pub profile_client: Arc<dyn ProfileValidationClient>,
     /// Cache repository for managing cached data
     pub cache: Arc<dyn CacheRepository>,
 }

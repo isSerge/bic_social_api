@@ -12,9 +12,12 @@ pub struct HttpContentClient {
     breaker: CircuitBreaker,
 }
 
+/// Trait to allow mocking in tests and to abstract away the implementation details of the content validation logic.
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait ContentValidationClient: Send + Sync {
+    /// Validates if a content item exists by making an HTTP request to the Content API.
+    /// Returns Ok(()) if the content exists, ClientError::NotFound if it doesn't, and other ClientErrors for different failure scenarios.
     async fn validate_content(
         &self,
         content_type: &str,

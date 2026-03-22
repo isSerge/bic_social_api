@@ -70,60 +70,30 @@ mod tests {
     use reqwest::StatusCode;
     use tower::ServiceExt;
     use uuid::Uuid;
-    use wiremock::{
-        Mock, MockServer, ResponseTemplate,
-        matchers::{header, method, path},
-    };
 
     use crate::{
         clients::content::MockContentValidationClient,
-        clients::profile::ProfileClient,
-        config::{AppConfig, CacheConfig, CircuitBreakerConfig, ContentTypeRegistry},
+        clients::profile::{MockProfileValidationClient, ProfileValidationClient},
+        config::{AppConfig, ContentTypeRegistry},
         repository::{cache_repo::MockCacheRepository, like_repo::MockLikeRepository},
         service::like_service::LikeService,
     };
 
     use super::*;
 
-    /// Helper function to setup an app with the auth middleware and a mock Profile API
-    /// Returns the app, the mock server (to configure responses), the expected user UUID, and a reference to the mock cache to override default assertions
-    async fn setup_app_with_mock_profile() -> (Router, MockServer, Uuid, Arc<MockCacheRepository>) {
-        let mock_server = MockServer::start().await;
-
-        let expected_uuid = Uuid::new_v4();
-        let mock_user_id = format!("usr_{}", expected_uuid);
-
-        // Configure mock Profile API to accept exactly one specific token
-        Mock::given(method("GET"))
-            .and(path("/v1/auth/validate"))
-            .and(header("Authorization", "Bearer valid_token_123"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "valid": true,
-                "user_id": mock_user_id,
-            })))
-            .mount(&mock_server)
-            .await;
-
+    /// Helper function to setup an app with the auth middleware and a mock profile validator
+    async fn setup_app_with_mock_profile(
+        profile_client: Arc<dyn ProfileValidationClient>,
+        mock_cache_arc: Arc<MockCacheRepository>,
+    ) -> Router {
         let config = Arc::new(AppConfig::default());
         let registry = Arc::new(ContentTypeRegistry::default());
-
-        let mut mock_cache = MockCacheRepository::new();
-        // Cache misses by default
-        mock_cache.expect_get_token().returning(|_| Ok(None));
-        mock_cache.expect_set_token().returning(|_, _, _| Ok(()));
-
-        let mock_cache_arc = Arc::new(mock_cache);
         let mock_like_repo = Arc::new(MockLikeRepository::new());
         let like_service = Arc::new(LikeService::new(
             mock_like_repo,
             mock_cache_arc.clone(),
             Arc::new(MockContentValidationClient::new()),
             config.cache,
-        ));
-        let profile_client = Arc::new(ProfileClient::new(
-            reqwest::Client::new(),
-            mock_server.uri(),
-            config.circuit_breaker,
         ));
 
         let state = AppState {
@@ -144,12 +114,25 @@ mod tests {
             .layer(middleware::from_fn_with_state(state.clone(), require_auth))
             .with_state(state);
 
-        (app, mock_server, expected_uuid, mock_cache_arc)
+        app
     }
 
     #[tokio::test]
     async fn auth_middleware_allows_valid_token_and_injects_user_id() {
-        let (app, _server, expected_uuid, _mock_cache) = setup_app_with_mock_profile().await;
+        let expected_uuid = Uuid::new_v4();
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache.expect_get_token().returning(|_| Ok(None));
+        mock_cache.expect_set_token().returning(|_, _, _| Ok(()));
+
+        let mut mock_profile_client = MockProfileValidationClient::new();
+        mock_profile_client
+            .expect_validate_token()
+            .with(mockall::predicate::eq("valid_token_123"))
+            .times(1)
+            .returning(move |_| Ok(expected_uuid));
+
+        let app =
+            setup_app_with_mock_profile(Arc::new(mock_profile_client), Arc::new(mock_cache)).await;
 
         let request = Request::builder()
             .method(http::Method::GET)
@@ -171,7 +154,14 @@ mod tests {
 
     #[tokio::test]
     async fn auth_middleware_rejects_missing_header() {
-        let (app, _server, _, _mock_cache) = setup_app_with_mock_profile().await;
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache.expect_get_token().times(0);
+
+        let app = setup_app_with_mock_profile(
+            Arc::new(MockProfileValidationClient::new()),
+            Arc::new(mock_cache),
+        )
+        .await;
 
         let request = Request::builder()
             .method(http::Method::GET)
@@ -188,7 +178,14 @@ mod tests {
 
     #[tokio::test]
     async fn auth_middleware_rejects_malformed_header() {
-        let (app, _server, _, _mock_cache) = setup_app_with_mock_profile().await;
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache.expect_get_token().times(0);
+
+        let app = setup_app_with_mock_profile(
+            Arc::new(MockProfileValidationClient::new()),
+            Arc::new(mock_cache),
+        )
+        .await;
 
         let request = Request::builder()
             .method(http::Method::GET)
@@ -203,18 +200,18 @@ mod tests {
 
     #[tokio::test]
     async fn middleware_rejects_invalid_token_from_profile_api() {
-        let (app, mock_server, _, _mock_cache) = setup_app_with_mock_profile().await;
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache.expect_get_token().returning(|_| Ok(None));
 
-        // Configure the mock server to reject "bad_token"
-        Mock::given(method("GET"))
-            .and(path("/v1/auth/validate"))
-            .and(header("Authorization", "Bearer bad_token"))
-            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
-                "valid": false,
-                "error": "invalid_token"
-            })))
-            .mount(&mock_server)
-            .await;
+        let mut mock_profile_client = MockProfileValidationClient::new();
+        mock_profile_client
+            .expect_validate_token()
+            .with(mockall::predicate::eq("bad_token"))
+            .times(1)
+            .returning(|_| Err(ClientError::NotFound));
+
+        let app =
+            setup_app_with_mock_profile(Arc::new(mock_profile_client), Arc::new(mock_cache)).await;
 
         let request = Request::builder()
             .method(http::Method::GET)
@@ -229,15 +226,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_middleware_cache_hit_bypasses_http() {
-        let mock_server = MockServer::start().await;
         let expected_uuid = Uuid::new_v4();
-
-        // The Profile API should NEVER be called
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(500))
-            .expect(0)
-            .mount(&mock_server)
-            .await;
 
         let mut mock_cache = MockCacheRepository::new();
         // Simulate a Cache Hit
@@ -247,31 +236,10 @@ mod tests {
             .times(1)
             .returning(move |_| Ok(Some(expected_uuid)));
 
-        let state = AppState {
-            config: Arc::new(AppConfig::default()),
-            content_type_registry: Arc::new(ContentTypeRegistry::default()),
-            like_service: Arc::new(LikeService::new(
-                Arc::new(MockLikeRepository::new()),
-                Arc::new(MockCacheRepository::new()),
-                Arc::new(MockContentValidationClient::new()),
-                CacheConfig::default(),
-            )),
-            profile_client: Arc::new(ProfileClient::new(
-                reqwest::Client::new(),
-                mock_server.uri(),
-                CircuitBreakerConfig::default(),
-            )),
-            cache: Arc::new(mock_cache),
-        };
+        let mock_profile_client = MockProfileValidationClient::new();
 
-        async fn dummy_handler(Extension(user_id): Extension<Uuid>) -> impl IntoResponse {
-            (StatusCode::OK, user_id.to_string())
-        }
-
-        let app = Router::new()
-            .route("/protected", get(dummy_handler))
-            .layer(middleware::from_fn_with_state(state.clone(), require_auth))
-            .with_state(state);
+        let app =
+            setup_app_with_mock_profile(Arc::new(mock_profile_client), Arc::new(mock_cache)).await;
 
         let request = Request::builder()
             .method(http::Method::GET)

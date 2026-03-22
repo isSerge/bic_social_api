@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use axum::http;
 use reqwest::StatusCode;
 use serde::Deserialize;
@@ -20,6 +21,15 @@ pub struct ProfileClient {
     http_client: reqwest::Client,
     base_url: String,
     breaker: CircuitBreaker,
+}
+
+/// Trait to allow mocking in tests and to abstract away the implementation details of the profile validation logic.
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait ProfileValidationClient: Send + Sync {
+    /// Validates a token by making an HTTP request to the Profile API.
+    /// Returns the associated user ID if valid, ClientError::NotFound if invalid, and other ClientErrors for different failure scenarios.
+    async fn validate_token(&self, token: &str) -> Result<Uuid, ClientError>;
 }
 
 impl ProfileClient {
@@ -64,9 +74,11 @@ impl ProfileClient {
             _ => Err(ClientError::DependencyUnavailable("Profile API".to_string())),
         }
     }
+}
 
-    /// Validates a token by calling the Profile API. Returns the associated user ID if valid.
-    pub async fn validate_token(&self, token: &str) -> Result<Uuid, ClientError> {
+#[async_trait]
+impl ProfileValidationClient for ProfileClient {
+    async fn validate_token(&self, token: &str) -> Result<Uuid, ClientError> {
         if !self.breaker.is_call_permitted() {
             tracing::warn!("Circuit breaker OPEN for Profile API");
             return Err(ClientError::DependencyUnavailable("Profile API".to_string()));

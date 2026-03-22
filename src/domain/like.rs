@@ -24,7 +24,7 @@ pub enum LikeEventKind {
 }
 
 /// Event payload broadcast over SSE after like/unlike operations.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LikeEvent {
     pub event: LikeEventKind,
     pub user_id: Uuid,

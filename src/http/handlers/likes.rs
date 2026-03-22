@@ -1,11 +1,17 @@
+use std::{convert::Infallible, time::Duration};
+
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Sse, sse::Event},
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tokio_stream::{
+    Stream, StreamExt,
+    wrappers::{BroadcastStream, errors::BroadcastStreamRecvError},
+};
 use uuid::Uuid;
 
 use crate::{
@@ -346,9 +352,62 @@ pub async fn top_liked(
     Ok((StatusCode::OK, Json(response)))
 }
 
+/// SSE stream query parameters DTO
+#[derive(Deserialize)]
+pub struct StreamQuery {
+    content_type: String,
+    content_id: Uuid,
+}
+
 /// GET /v1/likes/stream
-pub async fn sse_stream() -> impl IntoResponse {
-    StatusCode::NOT_IMPLEMENTED
+pub async fn sse_stream(
+    State(state): State<AppState>,
+    Query(query): Query<StreamQuery>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    // Validate content type
+    let content_type = state.content_type_registry.validate(&query.content_type)?;
+
+    // Subscribe to the channel for this content type
+    let rx = state.broadcaster.subscribe(content_type, &query.content_id);
+
+    let heartbeat_interval = Duration::from_secs(state.config.app.heartbeat_interval_secs);
+    let requested_content_type = query.content_type.clone();
+    let requested_content_id = query.content_id;
+
+    // Create a stream
+    let stream = BroadcastStream::new(rx).timeout(heartbeat_interval).filter_map(move |result| {
+        match result {
+            // On a new like event, serialize it to JSON and send as SSE data
+            Ok(Ok(like_event)) => {
+                if let Ok(json) = serde_json::to_string(&like_event) {
+                    Some(Ok(Event::default().data(json)))
+                } else {
+                    None
+                }
+            }
+            // On a lagged event, log a warning and skip
+            Ok(Err(BroadcastStreamRecvError::Lagged(_))) => {
+                tracing::warn!(
+                    "SSE stream lagged behind for content {}/{}",
+                    requested_content_type,
+                    requested_content_id
+                );
+                None
+            }
+            // On timeout (no events in the interval), send a heartbeat event to keep the connection alive
+            Err(_) => {
+                let heartbeat_json = serde_json::json!({
+                    "type": "heartbeat",
+                    "timestamp": Utc::now(),
+                })
+                .to_string();
+
+                Some(Ok(Event::default().data(heartbeat_json)))
+            }
+        }
+    });
+
+    Ok(Sse::new(stream))
 }
 
 #[cfg(test)]

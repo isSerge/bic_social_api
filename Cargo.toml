@@ -28,6 +28,7 @@ sqlx = { version = "0.8.6", features = [
 thiserror = "2.0.18"
 # TODO: replace full with necessary features only
 tokio = { version = "1.50.0", features = ["full"] }
+tokio-stream = { version = "0.1.18", features = ["time", "sync"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 tower = { version = "0.5.3", features = ["util"] }

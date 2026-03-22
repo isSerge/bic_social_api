@@ -59,7 +59,13 @@ pub trait CacheRepository: Send + Sync {
         window_secs: u64,
     ) -> Result<(bool, u64), RepoError>;
 
-    // TODO: add methods for leaderboard etc.
+    /// Sets the leaderboard data for a specific content type and time window in the cache.
+    async fn set_leaderboard(
+        &self,
+        content_type: Option<ContentType>,
+        window_name: &str,
+        items: Vec<(Uuid, i64)>,
+    ) -> Result<(), RepoError>;
 }
 
 /// Concrete implementation of CacheRepository using Redis.
@@ -82,7 +88,13 @@ impl RedisCacheRepository {
         format!("likes:token:{}", token)
     }
 
-    // TODO: add similar helpers for other cache types (leaderboard, etc.)
+    /// Helper function to generate Redis keys for leaderboard data.
+    fn leaderboard_key(content_type: Option<ContentType>, window_name: &str) -> String {
+        match content_type {
+            Some(ct) => format!("leaderboard:{}:{}", ct.0, window_name),
+            None => format!("leaderboard:all:{}", window_name),
+        }
+    }
 
     /// Helper function to generate Redis keys for content existence validation.
     fn content_exists_key(content_type: ContentType, content_id: Uuid) -> String {
@@ -269,6 +281,41 @@ impl CacheRepository for RedisCacheRepository {
             }
         }
     }
+
+    async fn set_leaderboard(
+        &self,
+        content_type: Option<ContentType>,
+        window_name: &str,
+        items: Vec<(Uuid, i64)>,
+    ) -> Result<(), RepoError> {
+        // Return Ok(()) to indicate cache miss if cannot connect
+        let Some(mut conn) = self.get_connection().await else {
+            return Ok(());
+        };
+
+        let key = Self::leaderboard_key(content_type, window_name);
+
+        let mut pipe = redis::pipe();
+        pipe.atomic().del(&key); // Clear existing leaderboard
+
+        if !items.is_empty() {
+            let redis_entries: Vec<(i64, String)> = items
+                .into_iter()
+                .map(|(content_id, like_count)| (like_count, content_id.to_string()))
+                .collect();
+
+            pipe.zadd_multiple(&key, &redis_entries).ignore();
+        }
+
+        // TODO: replace magic number
+        pipe.expire(&key, 90).ignore();
+
+        if let Err(e) = pipe.query_async::<()>(&mut conn).await {
+            tracing::warn!(error = %e, key = %key, "Redis pipeline for set_leaderboard failed");
+        }
+
+        Ok(())
+    }
 }
 
 // NOTE: Happy path tests are covered by integration tests
@@ -288,6 +335,20 @@ mod tests {
     fn broken_redis_pool() -> Pool {
         let config = Config::from_url("redis://invalid:6379");
         config.create_pool(Some(Runtime::Tokio1)).unwrap()
+    }
+
+    #[test]
+    fn test_leaderboard_key_for_specific_content_type() {
+        let key = RedisCacheRepository::leaderboard_key(Some(content_type("post")), "24h");
+
+        assert_eq!(key, "leaderboard:post:24h");
+    }
+
+    #[test]
+    fn test_leaderboard_key_for_all_content_types() {
+        let key = RedisCacheRepository::leaderboard_key(None, "all_time");
+
+        assert_eq!(key, "leaderboard:all:all_time");
     }
 
     #[tokio::test]
@@ -359,5 +420,24 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), (true, 0));
+    }
+
+    #[tokio::test]
+    async fn test_set_leaderboard_degrades_gracefully_when_redis_is_down() {
+        let cache = RedisCacheRepository::new(broken_redis_pool());
+        let items = vec![(Uuid::new_v4(), 10), (Uuid::new_v4(), 5)];
+
+        let result = cache.set_leaderboard(Some(content_type("post")), "24h", items).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_set_empty_leaderboard_degrades_gracefully_when_redis_is_down() {
+        let cache = RedisCacheRepository::new(broken_redis_pool());
+
+        let result = cache.set_leaderboard(None, "all_time", Vec::new()).await;
+
+        assert!(result.is_ok());
     }
 }

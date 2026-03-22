@@ -66,6 +66,15 @@ pub trait CacheRepository: Send + Sync {
         window_name: &str,
         items: Vec<(Uuid, i64)>,
     ) -> Result<(), RepoError>;
+
+    /// Gets the leaderboard data for a specific content type and time window from the cache.
+    /// Returns an empty vector if not cached.
+    async fn get_leaderboard(
+        &self,
+        content_type: Option<ContentType>,
+        window_name: &str,
+        limit: i64,
+    ) -> Result<Vec<(Uuid, i64)>, RepoError>;
 }
 
 /// Concrete implementation of CacheRepository using Redis.
@@ -316,6 +325,57 @@ impl CacheRepository for RedisCacheRepository {
 
         Ok(())
     }
+
+    async fn get_leaderboard(
+        &self,
+        content_type: Option<ContentType>,
+        window_name: &str,
+        limit: i64,
+    ) -> Result<Vec<(Uuid, i64)>, RepoError> {
+        // If limit is zero or negative, return empty vector immediately without querying Redis
+        if limit <= 0 {
+            return Ok(vec![]);
+        }
+
+        // Return Ok(None) to indicate cache miss if cannot connect
+        let Some(mut conn) = self.get_connection().await else {
+            return Ok(vec![]);
+        };
+
+        let key = Self::leaderboard_key(content_type, window_name);
+
+        // ZREVRANGE key 0 (limit-1) WITHSCORES
+        let stop = limit - 1;
+        let result: Result<Vec<(String, f64)>, _> = deadpool_redis::redis::cmd("ZREVRANGE")
+            .arg(&key)
+            .arg(0)
+            .arg(stop)
+            .arg("WITHSCORES")
+            .query_async(&mut conn)
+            .await;
+
+        match result {
+            Ok(raw_items) => {
+                // Convert from Vec<(String, f64)> to Vec<(Uuid, i64)>, filtering out any entries with invalid UUIDs or non-finite scores.
+                let parsed = raw_items
+                    .into_iter()
+                    .filter_map(|(id_str, score)| {
+                        if !score.is_finite() {
+                            return None;
+                        }
+
+                        let score = score.round() as i64;
+                        Uuid::parse_str(&id_str).ok().map(|uuid| (uuid, score))
+                    })
+                    .collect();
+                Ok(parsed)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, key = %key, "Redis ZREVRANGE failed");
+                Ok(vec![])
+            }
+        }
+    }
 }
 
 // NOTE: Happy path tests are covered by integration tests
@@ -439,5 +499,25 @@ mod tests {
         let result = cache.set_leaderboard(None, "all_time", Vec::new()).await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_get_leaderboard_degrades_gracefully_when_redis_is_down() {
+        let cache = RedisCacheRepository::new(broken_redis_pool());
+
+        let result = cache.get_leaderboard(Some(content_type("post")), "24h", 10).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Vec::new());
+    }
+
+    #[tokio::test]
+    async fn test_get_leaderboard_with_zero_limit() {
+        let cache = RedisCacheRepository::new(broken_redis_pool());
+
+        let result = cache.get_leaderboard(Some(content_type("post")), "24h", 0).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Vec::new());
     }
 }

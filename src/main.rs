@@ -104,7 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         like_service: Arc::new(like_service),
         profile_client: Arc::new(profile_client),
         cache: cache_repo,
-        broadcaster,
+        broadcaster: Arc::clone(&broadcaster),
     };
 
     // Create the background worker
@@ -148,6 +148,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         tracing::info!(service = "social-api", "Server drained cleanly.");
     }
+
+    // Shutdown broadcaster to close all SSE connections
+    tracing::info!(service = "social-api", "Shutting down SSE broadcaster...");
+    broadcaster.shutdown();
 
     // Close database connections
     tracing::info!(service = "social-api", "Closing database connections...");

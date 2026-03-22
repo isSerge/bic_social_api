@@ -99,7 +99,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(service = "social-api", "Server listening on {}", addr);
 
     // Serve the application with graceful shutdown
-    let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
+    let server = axum::serve(
+        listener,
+        // Use into_make_service_with_connect_info to get client IPs for rate limiting
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal());
 
     let shutdown_timeout = Duration::from_secs(config.server.shutdown_timeout_secs);
 

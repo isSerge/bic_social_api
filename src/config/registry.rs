@@ -58,6 +58,11 @@ impl ContentTypeRegistry {
     pub fn get_url(&self, ct: &ContentType) -> &str {
         self.base_urls.get(ct.0.as_ref()).expect("ContentType is guaranteed to exist")
     }
+
+    /// Returns a list of all registered content types
+    pub fn get_all_content_types(&self) -> Vec<ContentType> {
+        self.base_urls.keys().map(|k| ContentType(Arc::from(k.clone()))).collect()
+    }
 }
 
 #[cfg(test)]
@@ -127,5 +132,19 @@ mod tests {
 
         let ct = ContentType(Arc::from("top_picks"));
         assert_eq!(registry.get_url(&ct), "http://top-picks:8083");
+    }
+
+    #[test]
+    fn get_all_content_types_returns_all_registered_types() {
+        let mut urls = HashMap::new();
+        urls.insert("top_picks".to_string(), "http://top-picks:8083".to_string());
+        urls.insert("bonus_hunter".to_string(), "http://bonus:8080".to_string());
+        let registry = ContentTypeRegistry { base_urls: urls };
+
+        let content_types = registry.get_all_content_types();
+        let content_type_names: Vec<_> = content_types.iter().map(|ct| ct.0.as_ref()).collect();
+
+        assert!(content_type_names.contains(&"top_picks"));
+        assert!(content_type_names.contains(&"bonus_hunter"));
     }
 }

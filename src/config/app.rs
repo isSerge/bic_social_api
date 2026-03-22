@@ -51,6 +51,8 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(rename = "shutdown_timeout_secs", default = "default_shutdown_timeout_secs")]
     pub shutdown_timeout_secs: u64,
+    #[serde(rename = "sse_channel_capacity", default = "default_sse_channel_capacity")]
+    pub sse_channel_capacity: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,6 +180,7 @@ impl Default for AppConfig {
             server: ServerConfig {
                 port: 8080,
                 shutdown_timeout_secs: default_shutdown_timeout_secs(),
+                sse_channel_capacity: default_sse_channel_capacity(),
             },
             clients: ClientsConfig {
                 content_url: "http://localhost:8081".to_string(),
@@ -278,6 +281,10 @@ pub fn default_max_batch_pairs() -> usize {
 
 pub fn default_max_top_liked_limit() -> usize {
     50
+}
+
+pub fn default_sse_channel_capacity() -> usize {
+    16
 }
 
 #[cfg(test)]

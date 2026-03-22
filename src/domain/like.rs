@@ -20,6 +20,7 @@ pub struct LikeRecord {
 pub enum LikeEventKind {
     Like,
     Unlike,
+    Shutdown,
 }
 
 /// Event payload broadcast over SSE after like/unlike operations.

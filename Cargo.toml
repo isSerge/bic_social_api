@@ -33,6 +33,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 tower = { version = "0.5.3", features = ["util"] }
 tower-http = { version = "0.6.2", features = ["trace"] }
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
+dashmap = "6.1.0"
 
 [[bin]]
 name = "social-api"

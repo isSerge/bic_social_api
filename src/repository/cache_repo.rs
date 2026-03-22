@@ -64,7 +64,7 @@ pub trait CacheRepository: Send + Sync {
         &self,
         content_type: Option<ContentType>,
         window_name: &str,
-        items: Vec<(Uuid, i64)>,
+        items: Vec<(ContentType, Uuid, i64)>,
     ) -> Result<(), RepoError>;
 
     /// Gets the leaderboard data for a specific content type and time window from the cache.
@@ -74,7 +74,7 @@ pub trait CacheRepository: Send + Sync {
         content_type: Option<ContentType>,
         window_name: &str,
         limit: i64,
-    ) -> Result<Vec<(Uuid, i64)>, RepoError>;
+    ) -> Result<Vec<(ContentType, Uuid, i64)>, RepoError>;
 }
 
 /// Concrete implementation of CacheRepository using Redis.
@@ -295,7 +295,7 @@ impl CacheRepository for RedisCacheRepository {
         &self,
         content_type: Option<ContentType>,
         window_name: &str,
-        items: Vec<(Uuid, i64)>,
+        items: Vec<(ContentType, Uuid, i64)>,
     ) -> Result<(), RepoError> {
         // Return Ok(()) to indicate cache miss if cannot connect
         let Some(mut conn) = self.get_connection().await else {
@@ -310,7 +310,9 @@ impl CacheRepository for RedisCacheRepository {
         if !items.is_empty() {
             let redis_entries: Vec<(i64, String)> = items
                 .into_iter()
-                .map(|(content_id, like_count)| (like_count, content_id.to_string()))
+                .map(|(ct, content_id, like_count)| {
+                    (like_count, format!("{}:{}", ct.0.as_ref(), content_id))
+                })
                 .collect();
 
             pipe.zadd_multiple(&key, &redis_entries).ignore();
@@ -331,7 +333,7 @@ impl CacheRepository for RedisCacheRepository {
         content_type: Option<ContentType>,
         window_name: &str,
         limit: i64,
-    ) -> Result<Vec<(Uuid, i64)>, RepoError> {
+    ) -> Result<Vec<(ContentType, Uuid, i64)>, RepoError> {
         // If limit is zero or negative, return empty vector immediately without querying Redis
         if limit <= 0 {
             return Ok(vec![]);
@@ -356,16 +358,20 @@ impl CacheRepository for RedisCacheRepository {
 
         match result {
             Ok(raw_items) => {
-                // Convert from Vec<(String, f64)> to Vec<(Uuid, i64)>, filtering out any entries with invalid UUIDs or non-finite scores.
+                // Convert from Vec<("content_type:uuid", f64)> to Vec<(ContentType, Uuid, i64)>,
+                // skipping malformed entries.
                 let parsed = raw_items
                     .into_iter()
-                    .filter_map(|(id_str, score)| {
+                    .filter_map(|(member, score)| {
                         if !score.is_finite() {
                             return None;
                         }
 
+                        let (ct_raw, id_raw) = member.rsplit_once(':')?;
+                        let content_type = ContentType(std::sync::Arc::from(ct_raw.to_owned()));
+                        let content_id = Uuid::parse_str(id_raw).ok()?;
                         let score = score.round() as i64;
-                        Uuid::parse_str(&id_str).ok().map(|uuid| (uuid, score))
+                        Some((content_type, content_id, score))
                     })
                     .collect();
                 Ok(parsed)
@@ -485,7 +491,10 @@ mod tests {
     #[tokio::test]
     async fn test_set_leaderboard_degrades_gracefully_when_redis_is_down() {
         let cache = RedisCacheRepository::new(broken_redis_pool());
-        let items = vec![(Uuid::new_v4(), 10), (Uuid::new_v4(), 5)];
+        let items = vec![
+            (content_type("post"), Uuid::new_v4(), 10),
+            (content_type("post"), Uuid::new_v4(), 5),
+        ];
 
         let result = cache.set_leaderboard(Some(content_type("post")), "24h", items).await;
 

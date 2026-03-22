@@ -1,7 +1,5 @@
 use std::{sync::Arc, time::Duration};
 
-use uuid::Uuid;
-
 use crate::{
     config::{AppConfig, ContentTypeRegistry},
     domain::ContentType,
@@ -104,14 +102,8 @@ impl LeaderboardWorker {
             }
         };
 
-        // Transform the items into the format expected by the cache (Vec of (content_id, like_count))
-        let redis_items: Vec<(Uuid, i64)> =
-            items.into_iter().map(|(_, id, count)| (id, count)).collect();
-
         // Update the cache with the new leaderboard data
-        if let Err(e) =
-            self.cache.set_leaderboard(content_type.clone(), window_name, redis_items).await
-        {
+        if let Err(e) = self.cache.set_leaderboard(content_type.clone(), window_name, items).await {
             tracing::warn!(
               error = %e,
               window = %window_name,
@@ -177,7 +169,8 @@ mod tests {
             });
 
         // 2. Expect the worker to push the mapped results to Redis
-        let expected_redis_items = vec![(id1, 1500), (id2, 900)];
+        let expected_redis_items =
+            vec![(content_type.clone(), id1, 1500), (content_type.clone(), id2, 900)];
         let mut mock_cache = MockCacheRepository::new();
         mock_cache
             .expect_set_leaderboard()

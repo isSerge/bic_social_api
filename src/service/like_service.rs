@@ -181,7 +181,31 @@ impl LikeService {
         since: Option<DateTime<Utc>>,
         limit: i64,
     ) -> Result<Vec<(ContentType, Uuid, i64)>, DomainError> {
-        // TODO: try cache
+        let now = Utc::now();
+
+        // Map the datetime back to a string key for the cache lookup
+        let window_str = match since {
+            Some(dt) if dt > now - chrono::Duration::hours(25) => "24h",
+            Some(dt) if dt > now - chrono::Duration::days(8) => "7d",
+            Some(dt) if dt > now - chrono::Duration::days(31) => "30d",
+            None => "all_time",
+            _ => {
+                return Err(DomainError::InvalidTimeWindow(
+                    "Custom windows not supported for Leaderboard".to_string(),
+                ));
+            }
+        };
+
+        // Try cache first
+        if let Ok(cached_items) =
+            self.cache.get_leaderboard(content_type.clone(), window_str, limit).await
+        {
+            if !cached_items.is_empty() {
+                return Ok(cached_items);
+            }
+        }
+
+        // Slow path - query DB directly
         let top_liked = self.repo.get_top_liked(content_type, since, limit).await?;
 
         Ok(top_liked)
@@ -578,7 +602,7 @@ mod tests {
     async fn test_get_top_liked() {
         // Arrange
         let content_type = content_type("post");
-        let since = Utc.with_ymd_and_hms(2026, 2, 1, 0, 0, 0).unwrap();
+        let since = Utc::now() - chrono::Duration::hours(1);
         let limit = 10;
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
@@ -586,7 +610,13 @@ mod tests {
         let ct_clone1 = content_type.clone();
         let ct_clone2 = content_type.clone();
 
-        let mock_cache = MockCacheRepository::new();
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_get_leaderboard()
+            .with(eq(Some(content_type.clone())), eq("24h"), eq(limit))
+            .times(1)
+            .returning(|_, _, _| Ok(vec![]));
+
         let mut mock_repo = MockLikeRepository::new();
         mock_repo
             .expect_get_top_liked()
@@ -612,6 +642,113 @@ mod tests {
         assert_eq!(top.len(), 2);
         assert_eq!(top[0].2, 1500);
         assert_eq!(top[1].2, 900);
+    }
+
+    #[tokio::test]
+    async fn test_get_top_liked_cache_hit_for_specific_content_type() {
+        let content_type = content_type("post");
+        let expected_ct = content_type.clone();
+        let since = Utc::now() - chrono::Duration::hours(1);
+        let limit = 10;
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_get_leaderboard()
+            .with(eq(Some(content_type.clone())), eq("24h"), eq(limit))
+            .times(1)
+            .returning(move |_, _, _| {
+                Ok(vec![(expected_ct.clone(), id1, 1500), (expected_ct.clone(), id2, 900)])
+            });
+
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo.expect_get_top_liked().times(0);
+
+        let service = LikeService::new(
+            Arc::new(mock_repo),
+            Arc::new(mock_cache),
+            Arc::new(MockContentValidationClient::new()),
+            CacheConfig::default(),
+        );
+
+        let result = service.get_top_liked(Some(content_type.clone()), Some(since), limit).await;
+
+        assert!(result.is_ok());
+        let top = result.unwrap();
+        assert_eq!(top, vec![(content_type.clone(), id1, 1500), (content_type, id2, 900)]);
+    }
+
+    #[tokio::test]
+    async fn test_get_top_liked_global_cache_hit_returns_early() {
+        let limit = 10;
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let ct1 = content_type("post");
+        let ct2 = content_type("bonus_hunter");
+
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_get_leaderboard()
+            .with(eq(None), eq("all_time"), eq(limit))
+            .times(1)
+            .returning(move |_, _, _| Ok(vec![(ct1.clone(), id1, 1500), (ct2.clone(), id2, 900)]));
+
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo.expect_get_top_liked().times(0);
+
+        let service = LikeService::new(
+            Arc::new(mock_repo),
+            Arc::new(mock_cache),
+            Arc::new(MockContentValidationClient::new()),
+            CacheConfig::default(),
+        );
+
+        let result = service.get_top_liked(None, None, limit).await;
+
+        assert!(result.is_ok());
+        let top = result.unwrap();
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].1, id1);
+        assert_eq!(top[1].1, id2);
+    }
+
+    #[tokio::test]
+    async fn test_get_top_liked_global_cache_miss_hits_db() {
+        let limit = 10;
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let ct1 = content_type("post");
+        let ct2 = content_type("bonus_hunter");
+
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_get_leaderboard()
+            .with(eq(None), eq("all_time"), eq(limit))
+            .times(1)
+            .returning(|_, _, _| Ok(vec![]));
+
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo
+            .expect_get_top_liked()
+            .with(eq(None), eq(None), eq(limit))
+            .times(1)
+            .returning(move |_, _, _| Ok(vec![(ct1.clone(), id1, 1500), (ct2.clone(), id2, 900)]));
+
+        let service = LikeService::new(
+            Arc::new(mock_repo),
+            Arc::new(mock_cache),
+            Arc::new(MockContentValidationClient::new()),
+            CacheConfig::default(),
+        );
+
+        let result = service.get_top_liked(None, None, limit).await;
+
+        assert!(result.is_ok());
+        let top = result.unwrap();
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].1, id1);
+        assert_eq!(top[1].1, id2);
     }
 
     #[tokio::test]

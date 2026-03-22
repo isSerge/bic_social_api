@@ -715,7 +715,12 @@ mod tests {
         // Simulate top liked content with no specific content type and a 7-day window, returning an empty list for simplicity
         mock_repo.expect_get_top_liked().times(1).returning(|_, _, _| Ok(vec![]));
 
-        let mock_cache = MockCacheRepository::new();
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_get_leaderboard()
+            .with(eq(None), eq("7d"), eq(50))
+            .times(1)
+            .returning(|_, _, _| Ok(vec![]));
 
         let app = app_for_test(mock_repo, mock_cache, test_user_id);
 

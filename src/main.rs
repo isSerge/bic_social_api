@@ -18,8 +18,11 @@ use crate::{
     clients::{content::HttpContentClient, profile::ProfileClient},
     config::{AppConfig, ContentTypeRegistry},
     http::AppState,
-    repository::{cache_repo::RedisCacheRepository, like_repo::PgLikeRepository},
-    service::like_service::LikeService,
+    repository::{
+        cache_repo::RedisCacheRepository,
+        like_repo::{LikeRepository, PgLikeRepository},
+    },
+    service::{leaderboard::LeaderboardWorker, like_service::LikeService},
 };
 
 #[tokio::main]
@@ -63,7 +66,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("Failed to create Redis pool"); // TODO: handle Redis connection errors gracefully
 
     // Create Like Repository, and Like Service
-    let like_repo = PgLikeRepository::new(writer_pool.clone(), reader_pool.clone()); // Cloning is cheap for PgPool
+    let like_repo: Arc<dyn LikeRepository> =
+        Arc::new(PgLikeRepository::new(writer_pool.clone(), reader_pool.clone())); // Cloning is cheap for PgPool
     let cache_repo = Arc::new(RedisCacheRepository::new(redis_pool));
 
     // Initialize HTTP client and Profile API client
@@ -74,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.circuit_breaker,
     ));
     let like_service =
-        LikeService::new(Arc::new(like_repo), cache_repo.clone(), content_client, config.cache);
+        LikeService::new(Arc::clone(&like_repo), cache_repo.clone(), content_client, config.cache);
     let profile_client = ProfileClient::new(
         http_client.clone(),
         config.clients.profile_url.clone(),
@@ -89,6 +93,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         profile_client: Arc::new(profile_client),
         cache: cache_repo,
     };
+
+    // Create the background worker
+    let leaderboard_worker = LeaderboardWorker::new(
+        Arc::clone(&config),
+        Arc::clone(&state.content_type_registry),
+        Arc::clone(&like_repo),
+        Arc::clone(&state.cache),
+    );
+
+    tokio::spawn(async move {
+        leaderboard_worker.start().await;
+    });
 
     // Create the HTTP router with the application state
     let app = http::router::create_router(state);

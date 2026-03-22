@@ -211,79 +211,79 @@ impl Default for AppConfig {
     }
 }
 
-pub fn default_log_level() -> String {
+fn default_log_level() -> String {
     "info".to_string()
 }
 
-pub fn default_db_max_connections() -> u32 {
+fn default_db_max_connections() -> u32 {
     20
 }
 
-pub fn default_db_min_connections() -> u32 {
+fn default_db_min_connections() -> u32 {
     5
 }
 
-pub fn default_db_acquire_timeout_secs() -> u64 {
+fn default_db_acquire_timeout_secs() -> u64 {
     5
 }
 
-pub fn default_redis_pool_size() -> usize {
+fn default_redis_pool_size() -> usize {
     10
 }
 
-pub fn default_rate_limit_write_per_minute() -> u32 {
+fn default_rate_limit_write_per_minute() -> u32 {
     30
 }
 
-pub fn default_rate_limit_read_per_minute() -> u32 {
+fn default_rate_limit_read_per_minute() -> u32 {
     1000
 }
 
-pub fn default_cache_ttl_like_counts_secs() -> u64 {
+fn default_cache_ttl_like_counts_secs() -> u64 {
     300
 }
 
-pub fn default_cache_ttl_content_validation_secs() -> u64 {
+fn default_cache_ttl_content_validation_secs() -> u64 {
     3600
 }
 
-pub fn default_cache_ttl_user_status_secs() -> u64 {
+fn default_cache_ttl_user_status_secs() -> u64 {
     60
 }
 
-pub fn default_circuit_breaker_failure_threshold() -> u32 {
+fn default_circuit_breaker_failure_threshold() -> u32 {
     5
 }
 
-pub fn default_circuit_breaker_recovery_timeout_secs() -> u64 {
+fn default_circuit_breaker_recovery_timeout_secs() -> u64 {
     30
 }
 
-pub fn default_circuit_breaker_success_threshold() -> u32 {
+fn default_circuit_breaker_success_threshold() -> u32 {
     3
 }
 
-pub fn default_shutdown_timeout_secs() -> u64 {
+fn default_shutdown_timeout_secs() -> u64 {
     30
 }
 
-pub fn default_sse_heartbeat_interval_secs() -> u64 {
+fn default_sse_heartbeat_interval_secs() -> u64 {
     15
 }
 
-pub fn default_leaderboard_refresh_interval_secs() -> u64 {
+fn default_leaderboard_refresh_interval_secs() -> u64 {
     60
 }
 
-pub fn default_max_batch_pairs() -> usize {
+fn default_max_batch_pairs() -> usize {
     100
 }
 
-pub fn default_max_top_liked_limit() -> usize {
+fn default_max_top_liked_limit() -> usize {
     50
 }
 
-pub fn default_sse_channel_capacity() -> usize {
+fn default_sse_channel_capacity() -> usize {
     16
 }
 

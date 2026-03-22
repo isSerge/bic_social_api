@@ -74,8 +74,6 @@ impl Broadcaster {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::default_sse_channel_capacity;
-
     use super::*;
     use chrono::Utc;
     use tokio::time::{Duration, sleep};
@@ -97,9 +95,11 @@ mod tests {
         }
     }
 
+    const CAPACITY: usize = 16;
+
     #[tokio::test]
     async fn test_subscribe_and_receive_events() {
-        let broadcaster = Broadcaster::new(default_sse_channel_capacity());
+        let broadcaster = Broadcaster::new(CAPACITY);
         let content_type = ContentType(Arc::from("post"));
         let content_id = Uuid::new_v4();
 
@@ -126,7 +126,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_isolated_channels() {
-        let broadcaster = Broadcaster::new(default_sse_channel_capacity());
+        let broadcaster = Broadcaster::new(CAPACITY);
         let ct_post = ContentType(Arc::from("post"));
         let ct_video = ContentType(Arc::from("video"));
         let id1 = Uuid::new_v4();
@@ -153,7 +153,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_channel_cleanup_when_empty() {
-        let broadcaster = Broadcaster::new(default_sse_channel_capacity());
+        let broadcaster = Broadcaster::new(CAPACITY);
         let content_type = ContentType(Arc::from("post"));
         let content_id = Uuid::new_v4();
 
@@ -179,7 +179,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_shutdown_all_sends_shutdown_event_and_closes() {
-        let broadcaster = Arc::new(Broadcaster::new(default_sse_channel_capacity()));
+        let broadcaster = Arc::new(Broadcaster::new(CAPACITY));
         let content_type = ContentType(Arc::from("post"));
         let content_id = Uuid::new_v4();
 
@@ -207,14 +207,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_backpressure_handles_lagging_clients() {
-        let broadcaster = Broadcaster::new(default_sse_channel_capacity());
+        let broadcaster = Broadcaster::new(CAPACITY);
         let content_type = ContentType(Arc::from("post"));
         let content_id = Uuid::new_v4();
 
         let mut rx = broadcaster.subscribe(content_type.clone(), &content_id);
 
         // Send 20 events instantly without reading them.
-        let max = (default_sse_channel_capacity() + 4) as i64; // 20
+        let max = (CAPACITY + 4) as i64; // 20
         for i in 0..max {
             broadcaster.broadcast(create_event(LikeEventKind::Like, "post", content_id, i));
         }

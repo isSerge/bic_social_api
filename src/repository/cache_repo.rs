@@ -31,6 +31,21 @@ pub trait CacheRepository: Send + Sync {
         ttl_secs: u64,
     ) -> Result<(), RepoError>;
 
+    /// Attempts to acquire a short-lived recomputation lock for a count cache entry.
+    async fn try_acquire_count_lock(
+        &self,
+        content_type: ContentType,
+        content_id: Uuid,
+        ttl_secs: u64,
+    ) -> Result<bool, RepoError>;
+
+    /// Releases a recomputation lock for a count cache entry.
+    async fn release_count_lock(
+        &self,
+        content_type: ContentType,
+        content_id: Uuid,
+    ) -> Result<(), RepoError>;
+
     /// Gets the user_id associated with a token from the cache. Returns None if not cached or token is invalid.
     async fn get_token(&self, token: &str) -> Result<Option<Uuid>, RepoError>;
 
@@ -105,6 +120,11 @@ impl RedisCacheRepository {
     /// Helper to consistently format the token cache key
     fn token_key(token: &str) -> String {
         format!("likes:token:{}", token)
+    }
+
+    /// Helper function to generate Redis keys for count recomputation locks to prevent thundering herd on cache misses.
+    fn count_lock_key(content_type: ContentType, content_id: Uuid) -> String {
+        format!("lock:{}:{}", content_type.0, content_id)
     }
 
     /// Helper function to generate Redis keys for leaderboard data.
@@ -344,6 +364,65 @@ impl CacheRepository for RedisCacheRepository {
         }
     }
 
+    async fn try_acquire_count_lock(
+        &self,
+        content_type: ContentType,
+        content_id: Uuid,
+        ttl_secs: u64,
+    ) -> Result<bool, RepoError> {
+        let Some(mut conn) = self.get_connection().await else {
+            self.observe_cache_result("try_acquire_count_lock", "error");
+            return Ok(false);
+        };
+
+        let key = Self::count_lock_key(content_type, content_id);
+        let result: Result<Option<String>, _> = deadpool_redis::redis::cmd("SET")
+            .arg(&key)
+            .arg(1)
+            .arg("EX")
+            .arg(ttl_secs)
+            .arg("NX")
+            .query_async(&mut conn)
+            .await;
+
+        match result {
+            Ok(Some(_)) => {
+                self.observe_cache_result("try_acquire_count_lock", "hit");
+                Ok(true)
+            }
+            Ok(None) => {
+                self.observe_cache_result("try_acquire_count_lock", "miss");
+                Ok(false)
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, key = %key, "Redis SET NX for count lock failed");
+                self.observe_cache_result("try_acquire_count_lock", "error");
+                Ok(false)
+            }
+        }
+    }
+
+    async fn release_count_lock(
+        &self,
+        content_type: ContentType,
+        content_id: Uuid,
+    ) -> Result<(), RepoError> {
+        let Some(mut conn) = self.get_connection().await else {
+            self.observe_cache_result("release_count_lock", "error");
+            return Ok(());
+        };
+
+        let key = Self::count_lock_key(content_type, content_id);
+        if let Err(error) = conn.del::<_, ()>(&key).await {
+            tracing::warn!(error = %error, key = %key, "Redis DEL for count lock failed");
+            self.observe_cache_result("release_count_lock", "error");
+        } else {
+            self.observe_cache_result("release_count_lock", "hit");
+        }
+
+        Ok(())
+    }
+
     async fn set_leaderboard(
         &self,
         content_type: Option<ContentType>,
@@ -502,6 +581,25 @@ mod tests {
 
         // This should NOT return a RepoError. It should return Ok(()) because the DB write already succeeded anyway.
         let result = cache.set_count(content_type("post"), Uuid::new_v4(), 42, 300).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_try_acquire_count_lock_degrades_gracefully_when_redis_is_down() {
+        let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
+
+        let result = cache.try_acquire_count_lock(content_type("post"), Uuid::new_v4(), 1).await;
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_release_count_lock_degrades_gracefully_when_redis_is_down() {
+        let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
+
+        let result = cache.release_count_lock(content_type("post"), Uuid::new_v4()).await;
 
         assert!(result.is_ok());
     }

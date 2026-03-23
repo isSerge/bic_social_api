@@ -1,6 +1,8 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use tokio::time::sleep;
 use uuid::Uuid;
 
 use crate::clients::content::ContentValidationClient;
@@ -12,6 +14,10 @@ use crate::domain::{
 use crate::http::observability::AppMetrics;
 use crate::repository::{cache_repo::CacheRepository, like_repo::LikeRepository};
 use crate::service::broadcast::Broadcaster;
+
+const COUNT_CACHE_LOCK_TTL_SECS: u64 = 1;
+const COUNT_CACHE_RETRY_DELAY_MS: u64 = 25;
+const COUNT_CACHE_RETRY_ATTEMPTS: u8 = 3;
 
 /// Orchestrates authentication/content validation and like repository operations.
 pub struct LikeService {
@@ -146,11 +152,72 @@ impl LikeService {
         content_id: Uuid,
     ) -> Result<i64, DomainError> {
         // Try cache
-        if let Ok(Some(count)) = self.cache.get_count(content_type.clone(), content_id).await {
+        if let Some(count) = self.get_cached_count(content_type.clone(), content_id).await {
             return Ok(count);
         }
 
-        // Cache miss or cache failure, fallback to DB
+        if self.acquire_count_lock_if_available(content_type.clone(), content_id).await {
+            return self.refresh_count_cache_with_lock(content_type, content_id).await;
+        }
+
+        if let Some(count) = self.wait_for_cached_count(content_type.clone(), content_id).await {
+            return Ok(count);
+        }
+
+        self.refresh_count_cache(content_type, content_id).await
+    }
+
+    /// Helper function to get like count from cache. Returns None if not present or on error.
+    async fn get_cached_count(&self, content_type: ContentType, content_id: Uuid) -> Option<i64> {
+        self.cache.get_count(content_type, content_id).await.ok().flatten()
+    }
+
+    /// Helper function to acquire a lock for count recomputation when Redis allows it.
+    async fn acquire_count_lock_if_available(
+        &self,
+        content_type: ContentType,
+        content_id: Uuid,
+    ) -> bool {
+        self.cache
+            .try_acquire_count_lock(content_type, content_id, COUNT_CACHE_LOCK_TTL_SECS)
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Helper function to refresh the like count cache while ensuring the lock is released afterwards, even if the DB call fails.
+    async fn refresh_count_cache_with_lock(
+        &self,
+        content_type: ContentType,
+        content_id: Uuid,
+    ) -> Result<i64, DomainError> {
+        let result = self.refresh_count_cache(content_type.clone(), content_id).await;
+        let _ = self.cache.release_count_lock(content_type, content_id).await;
+        result
+    }
+
+    /// Helper function to wait for a short period, polling the cache for the like count to be populated by another request that acquired the lock. Returns the count if it becomes available within the retry attempts, or None if it still isn't available after retries.
+    async fn wait_for_cached_count(
+        &self,
+        content_type: ContentType,
+        content_id: Uuid,
+    ) -> Option<i64> {
+        for _ in 0..COUNT_CACHE_RETRY_ATTEMPTS {
+            sleep(Duration::from_millis(COUNT_CACHE_RETRY_DELAY_MS)).await;
+
+            if let Some(count) = self.get_cached_count(content_type.clone(), content_id).await {
+                return Some(count);
+            }
+        }
+
+        None
+    }
+
+    /// Helper function to query the database for the like count and populate the cache. Used both for the slow path when cache is missed and for refreshing the cache after acquiring the lock.
+    async fn refresh_count_cache(
+        &self,
+        content_type: ContentType,
+        content_id: Uuid,
+    ) -> Result<i64, DomainError> {
         let count = self.repo.get_count(content_type.clone(), content_id).await?;
 
         // Populate cache
@@ -257,7 +324,7 @@ mod tests {
     use crate::repository::error::RepoError;
     use crate::repository::like_repo::MockLikeRepository;
     use chrono::TimeZone;
-    use mockall::predicate::eq;
+    use mockall::{Sequence, predicate::eq};
     use sqlx::Error as SqlxError;
     use std::sync::Arc;
 
@@ -537,6 +604,11 @@ mod tests {
 
         // 1. First, the service tries the cache and misses
         mock_cache.expect_get_count().times(1).returning(|_, _| Ok(None));
+        mock_cache
+            .expect_try_acquire_count_lock()
+            .with(eq(ct.clone()), eq(content_id), eq(COUNT_CACHE_LOCK_TTL_SECS))
+            .times(1)
+            .returning(|_, _, _| Ok(true));
 
         // 2. Second, the service populates the cache with the DB result
         mock_cache
@@ -544,6 +616,11 @@ mod tests {
             .with(eq(ct.clone()), eq(content_id), eq(db_count), eq(config.like_counts_ttl_secs))
             .times(1)
             .returning(|_, _, _, _| Ok(()));
+        mock_cache
+            .expect_release_count_lock()
+            .with(eq(ct.clone()), eq(content_id))
+            .times(1)
+            .returning(|_, _| Ok(()));
 
         let service = LikeService::new(
             config,
@@ -558,6 +635,50 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), db_count);
+    }
+
+    #[tokio::test]
+    async fn test_get_count_waits_for_locked_refresh_and_uses_cached_value() {
+        let ct = content_type("bonus_hunter");
+        let content_id = Uuid::new_v4();
+        let mut sequence = Sequence::new();
+
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo.expect_get_count().times(0);
+
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_get_count()
+            .with(eq(ct.clone()), eq(content_id))
+            .times(1)
+            .in_sequence(&mut sequence)
+            .return_once(|_, _| Ok(None));
+        mock_cache
+            .expect_try_acquire_count_lock()
+            .with(eq(ct.clone()), eq(content_id), eq(COUNT_CACHE_LOCK_TTL_SECS))
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _, _| Ok(false));
+        mock_cache
+            .expect_get_count()
+            .with(eq(ct.clone()), eq(content_id))
+            .times(1)
+            .in_sequence(&mut sequence)
+            .return_once(|_, _| Ok(Some(150)));
+
+        let service = LikeService::new(
+            CacheConfig::default(),
+            Arc::new(mock_repo),
+            Arc::new(mock_cache),
+            Arc::new(MockContentValidationClient::new()),
+            Arc::new(Broadcaster::new(16)),
+            test_metrics(),
+        );
+
+        let result = service.get_count(ct, content_id).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 150);
     }
 
     #[tokio::test]

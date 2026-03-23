@@ -684,6 +684,11 @@ mod tests {
         let mut mock_cache = MockCacheRepository::new();
         // Cache repo should call get_count and return None to indicate cache miss
         mock_cache.expect_get_count().times(1).returning(|_, _| Ok(None));
+        mock_cache
+            .expect_try_acquire_count_lock()
+            .with(eq(content_type("post")), eq(content_id), eq(1u64))
+            .times(1)
+            .returning(|_, _, _| Ok(true));
         // Cache repo should call set_count with the count from repo after cache miss
         mock_cache
             .expect_set_count()
@@ -695,6 +700,11 @@ mod tests {
             )
             .times(1)
             .returning(|_, _, _, _| Ok(()));
+        mock_cache
+            .expect_release_count_lock()
+            .with(eq(content_type("post")), eq(content_id))
+            .times(1)
+            .returning(|_, _| Ok(()));
 
         let app = app_for_test(mock_repo, mock_cache, test_user_id);
 

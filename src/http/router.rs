@@ -1,5 +1,8 @@
 use axum::{
-    Router, extract::Request, middleware::{self}, routing::{delete, get, post}
+    Router,
+    extract::Request,
+    middleware::{self},
+    routing::{delete, get, post},
 };
 use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;

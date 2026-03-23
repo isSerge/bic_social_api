@@ -1,5 +1,6 @@
 use axum::response::{IntoResponse, Response};
 use reqwest::StatusCode;
+use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::clients::error::ClientError;
@@ -34,15 +35,23 @@ pub enum ApiError {
 // Map the layered errors to the spec's exact JSON shape
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, code, message) = match &self {
+        let (status, code, message, details) = match &self {
             // HTTP specific mappings
-            ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", self.to_string()),
-            ApiError::RateLimited { .. } => {
-                (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED", self.to_string())
+            ApiError::Unauthorized => {
+                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", self.to_string(), json!({}))
             }
-            ApiError::ContentTypeUnknown(_) => {
-                (StatusCode::BAD_REQUEST, "CONTENT_TYPE_UNKNOWN", self.to_string())
-            }
+            ApiError::RateLimited { retry_after_secs } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "RATE_LIMITED",
+                self.to_string(),
+                json!({ "retry_after_secs": retry_after_secs }),
+            ),
+            ApiError::ContentTypeUnknown(ContentTypeRegistryError::UnknownContentType(raw)) => (
+                StatusCode::BAD_REQUEST,
+                "CONTENT_TYPE_UNKNOWN",
+                self.to_string(),
+                json!({ "content_type": raw }),
+            ),
 
             // TODO: double check if these belong to domain
             // Domain layer mappings
@@ -50,18 +59,24 @@ impl IntoResponse for ApiError {
                 StatusCode::NOT_FOUND,
                 "CONTENT_NOT_FOUND",
                 format!("Content item {} of type {} does not exist", content_id, content_type),
+                json!({
+                    "content_type": content_type,
+                    "content_id": content_id,
+                }),
             ),
 
             ApiError::Domain(DomainError::InvalidTimeWindow(window)) => (
                 StatusCode::BAD_REQUEST,
                 "INVALID_TIME_WINDOW",
                 format!("Invalid time window parameter: {}", window),
+                json!({ "window": window }),
             ),
 
             ApiError::Domain(DomainError::BatchTooLarge { size, max }) => (
                 StatusCode::BAD_REQUEST,
                 "BATCH_TOO_LARGE",
                 format!("Batch size {} exceeds maximum of {}", size, max),
+                json!({ "size": size, "max": max }),
             ),
 
             ApiError::Domain(DomainError::Repository(_)) => {
@@ -70,6 +85,7 @@ impl IntoResponse for ApiError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "INTERNAL_ERROR",
                     "Unexpected internal error".to_string(),
+                    json!({}),
                 )
             }
 
@@ -77,14 +93,18 @@ impl IntoResponse for ApiError {
                 StatusCode::BAD_REQUEST,
                 "INVALID_CURSOR",
                 format!("Invalid pagination cursor: {}", cursor),
+                json!({ "cursor": cursor }),
             ),
 
-            ApiError::Domain(DomainError::Client(ClientError::DependencyUnavailable(_))) => {
-                (StatusCode::SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE", self.to_string())
-            }
+            ApiError::Domain(DomainError::Client(ClientError::DependencyUnavailable(_))) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "DEPENDENCY_UNAVAILABLE",
+                self.to_string(),
+                json!({}),
+            ),
 
             ApiError::Domain(DomainError::Client(ClientError::NotFound)) => {
-                (StatusCode::NOT_FOUND, "CONTENT_NOT_FOUND", self.to_string())
+                (StatusCode::NOT_FOUND, "CONTENT_NOT_FOUND", self.to_string(), json!({}))
             }
 
             ApiError::Domain(DomainError::Client(ClientError::Http(_))) => {
@@ -93,13 +113,17 @@ impl IntoResponse for ApiError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "INTERNAL_ERROR",
                     "Unexpected internal error".to_string(),
+                    json!({}),
                 )
             }
 
             // Client layer mappings
-            ApiError::Client(ClientError::DependencyUnavailable(_)) => {
-                (StatusCode::SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE", self.to_string())
-            }
+            ApiError::Client(ClientError::DependencyUnavailable(_)) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "DEPENDENCY_UNAVAILABLE",
+                self.to_string(),
+                json!({}),
+            ),
 
             // 500 Internal Server Errors (DB, Redis, unknown Reqwest errors)
             ApiError::Repo(_) | ApiError::Client(_) => {
@@ -108,14 +132,16 @@ impl IntoResponse for ApiError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "INTERNAL_ERROR",
                     "Unexpected internal error".to_string(),
+                    json!({}),
                 )
             }
         };
 
-        let body = axum::Json(serde_json::json!({
+        let body = axum::Json(json!({
             "error": {
                 "code": code,
                 "message": message,
+                "details": normalize_details(details),
             }
         }));
 
@@ -126,5 +152,12 @@ impl IntoResponse for ApiError {
         }
 
         response
+    }
+}
+
+fn normalize_details(details: Value) -> Value {
+    match details {
+        Value::Object(_) => details,
+        _ => json!({}),
     }
 }

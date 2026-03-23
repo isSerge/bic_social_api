@@ -5,6 +5,7 @@ use deadpool_redis::{Pool, redis::cmd};
 use reqwest::Client;
 use serde::Serialize;
 use sqlx::PgPool;
+use tokio::task::JoinSet;
 
 use crate::config::ContentTypeRegistry;
 
@@ -57,6 +58,12 @@ pub struct RealReadinessProbe {
     metrics: Arc<AppMetrics>,
 }
 
+/// Result of probing the content API.
+enum ContentApiProbeResult {
+    Healthy,
+    Unhealthy(String),
+}
+
 impl RealReadinessProbe {
     /// Build a readiness probe with the real application dependencies.
     pub fn new(
@@ -92,6 +99,67 @@ impl RealReadinessProbe {
             report.record_failure(dependency, format!("{}: {}", failure_prefix, error));
         }
     }
+
+    /// Probe a Postgres database by executing a simple query. Returns an error if the connection or query fails.
+    async fn probe_database(pool: &PgPool) -> Result<(), sqlx::Error> {
+        sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(pool).await.map(|_| ())
+    }
+
+    /// Probe Redis by sending a PING command and awaiting a response. Returns an error if the connection or command fails.
+    async fn probe_redis(redis_pool: &Pool) -> Result<(), String> {
+        match redis_pool.get().await {
+            Ok(mut conn) => cmd("PING")
+                .query_async::<String>(&mut conn)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// Probe the content API by sending a GET request to the /health endpoint of each configured upstream. Records detailed success or failure information in the metrics system for observability.
+    async fn probe_content_api(
+        http_client: Client,
+        metrics: Arc<AppMetrics>,
+        base_url: String,
+    ) -> ContentApiProbeResult {
+        let probe_url = format!("{}/health", base_url.trim_end_matches('/'));
+        let started_at = Instant::now();
+
+        match http_client.get(&probe_url).send().await {
+            Ok(response) if response.status().is_success() => {
+                metrics.observe_external_call(
+                    ExternalServiceLabel::ContentApi,
+                    HttpMethodLabel::Get,
+                    ExternalCallStatusLabel::Http(response.status()),
+                    started_at,
+                );
+                ContentApiProbeResult::Healthy
+            }
+            Ok(response) => {
+                metrics.observe_external_call(
+                    ExternalServiceLabel::ContentApi,
+                    HttpMethodLabel::Get,
+                    ExternalCallStatusLabel::Http(response.status()),
+                    started_at,
+                );
+                ContentApiProbeResult::Unhealthy(format!(
+                    "{} returned {}",
+                    probe_url,
+                    response.status()
+                ))
+            }
+            Err(error) => {
+                metrics.observe_external_call(
+                    ExternalServiceLabel::ContentApi,
+                    HttpMethodLabel::Get,
+                    ExternalCallStatusLabel::Error,
+                    started_at,
+                );
+                ContentApiProbeResult::Unhealthy(format!("{} request failed: {}", probe_url, error))
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -104,28 +172,26 @@ impl ReadinessProbe for RealReadinessProbe {
         let total_active = total_size - total_idle;
         self.metrics.set_db_pool_connections(total_active, total_idle, self.max_connections_total);
 
+        // Probe databases and Redis in parallel to minimize total probe time, recording any failures in the report.
+        let (writer_db_result, reader_db_result, redis_probe_result) = tokio::join!(
+            Self::probe_database(&self.writer_pool),
+            Self::probe_database(&self.reader_pool),
+            Self::probe_redis(&self.redis_pool),
+        );
+
         Self::record_probe_failure(
             &mut report,
             "writer_db",
             "writer database probe failed",
-            sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&self.writer_pool).await.map(|_| ()),
+            writer_db_result,
         );
 
         Self::record_probe_failure(
             &mut report,
             "reader_db",
             "reader database probe failed",
-            sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&self.reader_pool).await.map(|_| ()),
+            reader_db_result,
         );
-
-        let redis_probe_result = match self.redis_pool.get().await {
-            Ok(mut conn) => cmd("PING")
-                .query_async::<String>(&mut conn)
-                .await
-                .map(|_| ())
-                .map_err(|error| error.to_string()),
-            Err(error) => Err(error.to_string()),
-        };
 
         Self::record_probe_failure(&mut report, "redis", "redis probe failed", redis_probe_result);
 
@@ -138,36 +204,22 @@ impl ReadinessProbe for RealReadinessProbe {
 
         let mut any_content_api_healthy = false;
         let mut upstream_errors = Vec::new();
+
+        let mut content_probe_tasks = JoinSet::new();
         for base_url in upstreams {
-            let probe_url = format!("{}/health", base_url.trim_end_matches('/'));
-            let started_at = Instant::now();
-            match self.http_client.get(&probe_url).send().await {
-                Ok(response) if response.status().is_success() => {
-                    self.metrics.observe_external_call(
-                        ExternalServiceLabel::ContentApi,
-                        HttpMethodLabel::Get,
-                        ExternalCallStatusLabel::Http(response.status()),
-                        started_at,
-                    );
-                    any_content_api_healthy = true;
-                }
-                Ok(response) => {
-                    self.metrics.observe_external_call(
-                        ExternalServiceLabel::ContentApi,
-                        HttpMethodLabel::Get,
-                        ExternalCallStatusLabel::Http(response.status()),
-                        started_at,
-                    );
-                    upstream_errors.push(format!("{} returned {}", probe_url, response.status()));
-                }
+            content_probe_tasks.spawn(Self::probe_content_api(
+                self.http_client.clone(),
+                Arc::clone(&self.metrics),
+                base_url,
+            ));
+        }
+
+        while let Some(task_result) = content_probe_tasks.join_next().await {
+            match task_result {
+                Ok(ContentApiProbeResult::Healthy) => any_content_api_healthy = true,
+                Ok(ContentApiProbeResult::Unhealthy(error)) => upstream_errors.push(error),
                 Err(error) => {
-                    self.metrics.observe_external_call(
-                        ExternalServiceLabel::ContentApi,
-                        HttpMethodLabel::Get,
-                        ExternalCallStatusLabel::Error,
-                        started_at,
-                    );
-                    upstream_errors.push(format!("{} request failed: {}", probe_url, error));
+                    upstream_errors.push(format!("content API probe task failed: {}", error));
                 }
             }
         }

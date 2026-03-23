@@ -197,37 +197,6 @@ impl RedisCacheRepository {
             }
         }
     }
-
-    /// Helper function to record the result of cache operations for observability metrics. It categorizes operations and results into predefined labels for consistent monitoring.
-    fn observe_cache_result(&self, operation: &str, result: &str) {
-        let operation = match operation {
-            "get_count" => CacheOperationLabel::GetCount,
-            "batch_get_counts" => CacheOperationLabel::BatchGetCounts,
-            "set_count" => CacheOperationLabel::SetCount,
-            "set_batch_counts" => CacheOperationLabel::SetBatchCounts,
-            "get_like_status" => CacheOperationLabel::GetLikeStatus,
-            "set_like_status" => CacheOperationLabel::SetLikeStatus,
-            "try_acquire_count_lock" => CacheOperationLabel::TryAcquireCountLock,
-            "release_count_lock" => CacheOperationLabel::ReleaseCountLock,
-            "get_token" => CacheOperationLabel::GetToken,
-            "set_token" => CacheOperationLabel::SetToken,
-            "get_content_exists" => CacheOperationLabel::GetContentExists,
-            "set_content_exists" => CacheOperationLabel::SetContentExists,
-            "check_rate_limit" => CacheOperationLabel::CheckRateLimit,
-            "set_leaderboard" => CacheOperationLabel::SetLeaderboard,
-            "get_leaderboard" => CacheOperationLabel::GetLeaderboard,
-            _ => return,
-        };
-
-        let result = match result {
-            "hit" => CacheResultLabel::Hit,
-            "miss" => CacheResultLabel::Miss,
-            "error" => CacheResultLabel::Error,
-            _ => return,
-        };
-
-        self.metrics.observe_cache_operation(operation, result);
-    }
 }
 
 #[async_trait]
@@ -239,7 +208,8 @@ impl CacheRepository for RedisCacheRepository {
     ) -> Result<Option<i64>, RepoError> {
         // Return Ok(None) to indicate cache miss if cannot connect
         let Some(mut conn) = self.get_connection().await else {
-            self.observe_cache_result("get_count", "error");
+            self.metrics
+                .observe_cache_operation(CacheOperationLabel::GetCount, CacheResultLabel::Error);
             return Ok(None);
         };
 
@@ -247,16 +217,21 @@ impl CacheRepository for RedisCacheRepository {
 
         match conn.get::<_, Option<i64>>(&key).await {
             Ok(Some(count)) => {
-                self.observe_cache_result("get_count", "hit");
+                self.metrics
+                    .observe_cache_operation(CacheOperationLabel::GetCount, CacheResultLabel::Hit);
                 Ok(Some(count))
             }
             Ok(None) => {
-                self.observe_cache_result("get_count", "miss");
+                self.metrics
+                    .observe_cache_operation(CacheOperationLabel::GetCount, CacheResultLabel::Miss);
                 Ok(None)
             }
             Err(e) => {
                 tracing::warn!(error = %e, key = %key, "Redis GET failed");
-                self.observe_cache_result("get_count", "error");
+                self.metrics.observe_cache_operation(
+                    CacheOperationLabel::GetCount,
+                    CacheResultLabel::Error,
+                );
                 Ok(None)
             }
         }
@@ -268,13 +243,19 @@ impl CacheRepository for RedisCacheRepository {
     ) -> Result<Vec<Option<i64>>, RepoError> {
         // If the input list is empty, return early with an empty result without querying Redis
         if items.is_empty() {
-            self.observe_cache_result("batch_get_counts", "miss");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::BatchGetCounts,
+                CacheResultLabel::Miss,
+            );
             return Ok(Vec::new());
         }
 
         // Return Ok(vec![None; items.len()]) to indicate cache miss if cannot connect
         let Some(mut conn) = self.get_connection().await else {
-            self.observe_cache_result("batch_get_counts", "error");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::BatchGetCounts,
+                CacheResultLabel::Error,
+            );
             return Ok(vec![None; items.len()]);
         };
 
@@ -289,13 +270,21 @@ impl CacheRepository for RedisCacheRepository {
 
         match result {
             Ok(counts) => {
-                let metric_result = if counts.iter().any(Option::is_some) { "hit" } else { "miss" };
-                self.observe_cache_result("batch_get_counts", metric_result);
+                let metric_result = if counts.iter().any(Option::is_some) {
+                    CacheResultLabel::Hit
+                } else {
+                    CacheResultLabel::Miss
+                };
+                self.metrics
+                    .observe_cache_operation(CacheOperationLabel::BatchGetCounts, metric_result);
                 Ok(counts)
             }
             Err(error) => {
                 tracing::warn!(error = %error, keys = ?keys, "Redis MGET for count batch failed");
-                self.observe_cache_result("batch_get_counts", "error");
+                self.metrics.observe_cache_operation(
+                    CacheOperationLabel::BatchGetCounts,
+                    CacheResultLabel::Error,
+                );
                 Ok(vec![None; items.len()])
             }
         }
@@ -310,7 +299,8 @@ impl CacheRepository for RedisCacheRepository {
     ) -> Result<(), RepoError> {
         // Return Ok(()) to indicate cache miss if cannot connect
         let Some(mut conn) = self.get_connection().await else {
-            self.observe_cache_result("set_count", "error");
+            self.metrics
+                .observe_cache_operation(CacheOperationLabel::SetCount, CacheResultLabel::Error);
             return Ok(());
         };
 
@@ -318,9 +308,11 @@ impl CacheRepository for RedisCacheRepository {
 
         if let Err(e) = conn.set_ex::<_, _, ()>(&key, count, ttl_secs).await {
             tracing::warn!(error = %e, key = %key, "Redis SETEX failed");
-            self.observe_cache_result("set_count", "error");
+            self.metrics
+                .observe_cache_operation(CacheOperationLabel::SetCount, CacheResultLabel::Error);
         } else {
-            self.observe_cache_result("set_count", "hit");
+            self.metrics
+                .observe_cache_operation(CacheOperationLabel::SetCount, CacheResultLabel::Hit);
         }
 
         Ok(())
@@ -333,13 +325,19 @@ impl CacheRepository for RedisCacheRepository {
     ) -> Result<(), RepoError> {
         // If the input list is empty, return early without querying Redis
         if items.is_empty() {
-            self.observe_cache_result("set_batch_counts", "hit");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::SetBatchCounts,
+                CacheResultLabel::Hit,
+            );
             return Ok(());
         }
 
         // Return Ok(()) to indicate cache miss if cannot connect
         let Some(mut conn) = self.get_connection().await else {
-            self.observe_cache_result("set_batch_counts", "error");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::SetBatchCounts,
+                CacheResultLabel::Error,
+            );
             return Ok(());
         };
 
@@ -355,9 +353,15 @@ impl CacheRepository for RedisCacheRepository {
         // Execute the pipeline and log the result.
         if let Err(error) = pipe.query_async::<()>(&mut conn).await {
             tracing::warn!(error = %error, item_count = items.len(), "Redis pipeline for count batch failed");
-            self.observe_cache_result("set_batch_counts", "error");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::SetBatchCounts,
+                CacheResultLabel::Error,
+            );
         } else {
-            self.observe_cache_result("set_batch_counts", "hit");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::SetBatchCounts,
+                CacheResultLabel::Hit,
+            );
         }
 
         Ok(())
@@ -370,7 +374,10 @@ impl CacheRepository for RedisCacheRepository {
         content_id: Uuid,
     ) -> Result<Option<CachedLikeStatus>, RepoError> {
         let Some(mut conn) = self.get_connection().await else {
-            self.observe_cache_result("get_like_status", "error");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::GetLikeStatus,
+                CacheResultLabel::Error,
+            );
             return Ok(None);
         };
 
@@ -379,30 +386,45 @@ impl CacheRepository for RedisCacheRepository {
         match conn.get::<_, Option<String>>(&key).await {
             // If the sentinel value is found, it means the user has unliked the content. We return a specific Unliked status in this case.
             Ok(Some(value)) if value == UNLIKED_STATUS_SENTINEL => {
-                self.observe_cache_result("get_like_status", "hit");
+                self.metrics.observe_cache_operation(
+                    CacheOperationLabel::GetLikeStatus,
+                    CacheResultLabel::Hit,
+                );
                 Ok(Some(CachedLikeStatus::Unliked))
             }
             // If a timestamp string is found, we attempt to parse it. If parsing succeeds, we return a Liked status with the timestamp. If parsing fails, we log a warning and treat it as a cache miss by returning Ok(None).
             Ok(Some(value)) => match DateTime::parse_from_rfc3339(&value) {
                 Ok(timestamp) => {
-                    self.observe_cache_result("get_like_status", "hit");
+                    self.metrics.observe_cache_operation(
+                        CacheOperationLabel::GetLikeStatus,
+                        CacheResultLabel::Hit,
+                    );
                     Ok(Some(CachedLikeStatus::Liked(timestamp.with_timezone(&Utc))))
                 }
                 Err(error) => {
                     tracing::warn!(error = %error, key = %key, value = %value, "Redis cached like status payload was invalid");
-                    self.observe_cache_result("get_like_status", "miss");
+                    self.metrics.observe_cache_operation(
+                        CacheOperationLabel::GetLikeStatus,
+                        CacheResultLabel::Miss,
+                    );
                     Ok(None)
                 }
             },
             // If the key is not found, we treat it as a cache miss and return Ok(None).
             Ok(None) => {
-                self.observe_cache_result("get_like_status", "miss");
+                self.metrics.observe_cache_operation(
+                    CacheOperationLabel::GetLikeStatus,
+                    CacheResultLabel::Miss,
+                );
                 Ok(None)
             }
             // If there was an error communicating with Redis, we log a warning and return Ok(None) to allow the application to function without cache.
             Err(error) => {
                 tracing::warn!(error = %error, key = %key, "Redis GET for cached like status failed");
-                self.observe_cache_result("get_like_status", "error");
+                self.metrics.observe_cache_operation(
+                    CacheOperationLabel::GetLikeStatus,
+                    CacheResultLabel::Error,
+                );
                 Ok(None)
             }
         }
@@ -417,7 +439,10 @@ impl CacheRepository for RedisCacheRepository {
         ttl_secs: u64,
     ) -> Result<(), RepoError> {
         let Some(mut conn) = self.get_connection().await else {
-            self.observe_cache_result("set_like_status", "error");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::SetLikeStatus,
+                CacheResultLabel::Error,
+            );
             return Ok(());
         };
 
@@ -430,9 +455,13 @@ impl CacheRepository for RedisCacheRepository {
         // If there was an error setting the value in Redis, we log a warning but do not return an error to allow the application to function without cache. We also record the cache operation result for metrics.
         if let Err(error) = conn.set_ex::<_, _, ()>(&key, value, ttl_secs).await {
             tracing::warn!(error = %error, key = %key, "Redis SETEX for cached like status failed");
-            self.observe_cache_result("set_like_status", "error");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::SetLikeStatus,
+                CacheResultLabel::Error,
+            );
         } else {
-            self.observe_cache_result("set_like_status", "hit");
+            self.metrics
+                .observe_cache_operation(CacheOperationLabel::SetLikeStatus, CacheResultLabel::Hit);
         }
 
         Ok(())
@@ -441,7 +470,8 @@ impl CacheRepository for RedisCacheRepository {
     async fn get_token(&self, token: &str) -> Result<Option<Uuid>, RepoError> {
         // Return Ok(None) to indicate cache miss if cannot connect
         let Some(mut conn) = self.get_connection().await else {
-            self.observe_cache_result("get_token", "error");
+            self.metrics
+                .observe_cache_operation(CacheOperationLabel::GetToken, CacheResultLabel::Error);
             return Ok(None);
         };
 
@@ -451,19 +481,23 @@ impl CacheRepository for RedisCacheRepository {
             Ok(Some(uuid_str)) => {
                 // If it parses successfully, return it. Otherwise treat as miss.
                 let parsed = Uuid::parse_str(&uuid_str).ok();
-                self.observe_cache_result(
-                    "get_token",
-                    if parsed.is_some() { "hit" } else { "miss" },
+                self.metrics.observe_cache_operation(
+                    CacheOperationLabel::GetToken,
+                    if parsed.is_some() { CacheResultLabel::Hit } else { CacheResultLabel::Miss },
                 );
                 Ok(parsed)
             }
             Ok(None) => {
-                self.observe_cache_result("get_token", "miss");
+                self.metrics
+                    .observe_cache_operation(CacheOperationLabel::GetToken, CacheResultLabel::Miss);
                 Ok(None)
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Redis GET token failed");
-                self.observe_cache_result("get_token", "error");
+                self.metrics.observe_cache_operation(
+                    CacheOperationLabel::GetToken,
+                    CacheResultLabel::Error,
+                );
                 Ok(None)
             }
         }
@@ -472,7 +506,8 @@ impl CacheRepository for RedisCacheRepository {
     async fn set_token(&self, token: &str, user_id: Uuid, ttl_secs: u64) -> Result<(), RepoError> {
         // Return Ok(()) to indicate cache miss if cannot connect
         let Some(mut conn) = self.get_connection().await else {
-            self.observe_cache_result("set_token", "error");
+            self.metrics
+                .observe_cache_operation(CacheOperationLabel::SetToken, CacheResultLabel::Error);
             return Ok(());
         };
 
@@ -480,9 +515,11 @@ impl CacheRepository for RedisCacheRepository {
 
         if let Err(e) = conn.set_ex::<_, _, ()>(&key, user_id.to_string(), ttl_secs).await {
             tracing::warn!(error = %e, "Redis SETEX token failed");
-            self.observe_cache_result("set_token", "error");
+            self.metrics
+                .observe_cache_operation(CacheOperationLabel::SetToken, CacheResultLabel::Error);
         } else {
-            self.observe_cache_result("set_token", "hit");
+            self.metrics
+                .observe_cache_operation(CacheOperationLabel::SetToken, CacheResultLabel::Hit);
         }
 
         Ok(())
@@ -495,7 +532,10 @@ impl CacheRepository for RedisCacheRepository {
     ) -> Result<Option<bool>, RepoError> {
         // Return Ok(None) to indicate cache miss if cannot connect
         let Some(mut conn) = self.get_connection().await else {
-            self.observe_cache_result("get_content_exists", "error");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::GetContentExists,
+                CacheResultLabel::Error,
+            );
             return Ok(None);
         };
 
@@ -503,16 +543,25 @@ impl CacheRepository for RedisCacheRepository {
 
         match conn.exists::<_, bool>(&key).await {
             Ok(true) => {
-                self.observe_cache_result("get_content_exists", "hit");
+                self.metrics.observe_cache_operation(
+                    CacheOperationLabel::GetContentExists,
+                    CacheResultLabel::Hit,
+                );
                 Ok(Some(true))
             }
             Ok(false) => {
-                self.observe_cache_result("get_content_exists", "miss");
+                self.metrics.observe_cache_operation(
+                    CacheOperationLabel::GetContentExists,
+                    CacheResultLabel::Miss,
+                );
                 Ok(None)
             }
             Err(e) => {
                 tracing::warn!(error = %e, key = %key, "Redis EXISTS failed");
-                self.observe_cache_result("get_content_exists", "error");
+                self.metrics.observe_cache_operation(
+                    CacheOperationLabel::GetContentExists,
+                    CacheResultLabel::Error,
+                );
                 Ok(None)
             }
         }
@@ -526,7 +575,10 @@ impl CacheRepository for RedisCacheRepository {
     ) -> Result<(), RepoError> {
         // Return Ok(()) to indicate cache miss if cannot connect
         let Some(mut conn) = self.get_connection().await else {
-            self.observe_cache_result("set_content_exists", "error");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::SetContentExists,
+                CacheResultLabel::Error,
+            );
             return Ok(());
         };
 
@@ -534,9 +586,15 @@ impl CacheRepository for RedisCacheRepository {
 
         if let Err(e) = conn.set_ex::<_, _, ()>(&key, 1u8, ttl_secs).await {
             tracing::warn!(error = %e, key = %key, "Redis SETEX content_exists failed");
-            self.observe_cache_result("set_content_exists", "error");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::SetContentExists,
+                CacheResultLabel::Error,
+            );
         } else {
-            self.observe_cache_result("set_content_exists", "hit");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::SetContentExists,
+                CacheResultLabel::Hit,
+            );
         }
 
         Ok(())
@@ -550,7 +608,10 @@ impl CacheRepository for RedisCacheRepository {
     ) -> Result<RateLimitStatus, RepoError> {
         // Return an allowed status if Redis is unavailable to allow the request (fail open)
         let Some(mut conn) = self.get_connection().await else {
-            self.observe_cache_result("check_rate_limit", "error");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::CheckRateLimit,
+                CacheResultLabel::Error,
+            );
             return Ok(RateLimitStatus { allowed: true, current_count: 0, retry_after_secs: 0 });
         };
 
@@ -572,7 +633,10 @@ impl CacheRepository for RedisCacheRepository {
 
         match result {
             Ok((count, ttl)) => {
-                self.observe_cache_result("check_rate_limit", "hit");
+                self.metrics.observe_cache_operation(
+                    CacheOperationLabel::CheckRateLimit,
+                    CacheResultLabel::Hit,
+                );
                 // If TTL is negative (key missing or no expiry), fallback to window_secs
                 let ttl = if ttl > 0 { ttl } else { window_secs };
                 Ok(RateLimitStatus {
@@ -583,7 +647,10 @@ impl CacheRepository for RedisCacheRepository {
             }
             Err(e) => {
                 tracing::warn!(error = %e, key = %key, "Redis rate limit script failed");
-                self.observe_cache_result("check_rate_limit", "error");
+                self.metrics.observe_cache_operation(
+                    CacheOperationLabel::CheckRateLimit,
+                    CacheResultLabel::Error,
+                );
                 Ok(RateLimitStatus { allowed: true, current_count: 0, retry_after_secs: 0 })
             }
         }
@@ -596,7 +663,10 @@ impl CacheRepository for RedisCacheRepository {
         ttl_secs: u64,
     ) -> Result<bool, RepoError> {
         let Some(mut conn) = self.get_connection().await else {
-            self.observe_cache_result("try_acquire_count_lock", "error");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::TryAcquireCountLock,
+                CacheResultLabel::Error,
+            );
             return Ok(false);
         };
 
@@ -612,16 +682,25 @@ impl CacheRepository for RedisCacheRepository {
 
         match result {
             Ok(Some(_)) => {
-                self.observe_cache_result("try_acquire_count_lock", "hit");
+                self.metrics.observe_cache_operation(
+                    CacheOperationLabel::TryAcquireCountLock,
+                    CacheResultLabel::Hit,
+                );
                 Ok(true)
             }
             Ok(None) => {
-                self.observe_cache_result("try_acquire_count_lock", "miss");
+                self.metrics.observe_cache_operation(
+                    CacheOperationLabel::TryAcquireCountLock,
+                    CacheResultLabel::Miss,
+                );
                 Ok(false)
             }
             Err(error) => {
                 tracing::warn!(error = %error, key = %key, "Redis SET NX for count lock failed");
-                self.observe_cache_result("try_acquire_count_lock", "error");
+                self.metrics.observe_cache_operation(
+                    CacheOperationLabel::TryAcquireCountLock,
+                    CacheResultLabel::Error,
+                );
                 Ok(false)
             }
         }
@@ -633,16 +712,25 @@ impl CacheRepository for RedisCacheRepository {
         content_id: Uuid,
     ) -> Result<(), RepoError> {
         let Some(mut conn) = self.get_connection().await else {
-            self.observe_cache_result("release_count_lock", "error");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::ReleaseCountLock,
+                CacheResultLabel::Error,
+            );
             return Ok(());
         };
 
         let key = Self::count_lock_key(content_type, content_id);
         if let Err(error) = conn.del::<_, ()>(&key).await {
             tracing::warn!(error = %error, key = %key, "Redis DEL for count lock failed");
-            self.observe_cache_result("release_count_lock", "error");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::ReleaseCountLock,
+                CacheResultLabel::Error,
+            );
         } else {
-            self.observe_cache_result("release_count_lock", "hit");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::ReleaseCountLock,
+                CacheResultLabel::Hit,
+            );
         }
 
         Ok(())
@@ -656,7 +744,10 @@ impl CacheRepository for RedisCacheRepository {
     ) -> Result<(), RepoError> {
         // Return Ok(()) to indicate cache miss if cannot connect
         let Some(mut conn) = self.get_connection().await else {
-            self.observe_cache_result("set_leaderboard", "error");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::SetLeaderboard,
+                CacheResultLabel::Error,
+            );
             return Ok(());
         };
 
@@ -681,9 +772,15 @@ impl CacheRepository for RedisCacheRepository {
 
         if let Err(e) = pipe.query_async::<()>(&mut conn).await {
             tracing::warn!(error = %e, key = %key, "Redis pipeline for set_leaderboard failed");
-            self.observe_cache_result("set_leaderboard", "error");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::SetLeaderboard,
+                CacheResultLabel::Error,
+            );
         } else {
-            self.observe_cache_result("set_leaderboard", "hit");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::SetLeaderboard,
+                CacheResultLabel::Hit,
+            );
         }
 
         Ok(())
@@ -697,13 +794,19 @@ impl CacheRepository for RedisCacheRepository {
     ) -> Result<Vec<(ContentType, Uuid, i64)>, RepoError> {
         // If limit is zero or negative, return empty vector immediately without querying Redis
         if limit <= 0 {
-            self.observe_cache_result("get_leaderboard", "miss");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::GetLeaderboard,
+                CacheResultLabel::Miss,
+            );
             return Ok(vec![]);
         }
 
         // Return Ok(None) to indicate cache miss if cannot connect
         let Some(mut conn) = self.get_connection().await else {
-            self.observe_cache_result("get_leaderboard", "error");
+            self.metrics.observe_cache_operation(
+                CacheOperationLabel::GetLeaderboard,
+                CacheResultLabel::Error,
+            );
             return Ok(vec![]);
         };
 
@@ -737,15 +840,18 @@ impl CacheRepository for RedisCacheRepository {
                         Some((content_type, content_id, score))
                     })
                     .collect();
-                self.observe_cache_result(
-                    "get_leaderboard",
-                    if parsed.is_empty() { "miss" } else { "hit" },
+                self.metrics.observe_cache_operation(
+                    CacheOperationLabel::GetLeaderboard,
+                    if parsed.is_empty() { CacheResultLabel::Miss } else { CacheResultLabel::Hit },
                 );
                 Ok(parsed)
             }
             Err(e) => {
                 tracing::warn!(error = %e, key = %key, "Redis ZREVRANGE failed");
-                self.observe_cache_result("get_leaderboard", "error");
+                self.metrics.observe_cache_operation(
+                    CacheOperationLabel::GetLeaderboard,
+                    CacheResultLabel::Error,
+                );
                 Ok(vec![])
             }
         }

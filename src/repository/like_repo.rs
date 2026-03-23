@@ -322,9 +322,8 @@ impl LikeRepository for PgLikeRepository {
         }
 
         // Prepare the content types and IDs for the query
-        let content_types: Vec<String> =
-            items.iter().map(|(ct, _)| ct.0.as_ref().to_string()).collect();
-        let content_ids: Vec<Uuid> = items.iter().map(|(_, id)| *id).collect();
+        let (content_types, content_ids): (Vec<String>, Vec<Uuid>) =
+            items.iter().map(|(ct, id)| (ct.0.as_ref().to_string(), *id)).unzip();
 
         // Use UNNEST to join the input list with the like_counts table, preserving input order
         let rows = sqlx::query!(
@@ -355,9 +354,8 @@ impl LikeRepository for PgLikeRepository {
         }
 
         // Prepare the content types and IDs for the query
-        let content_types: Vec<String> =
-            items.iter().map(|(ct, _)| ct.0.as_ref().to_string()).collect();
-        let content_ids: Vec<Uuid> = items.iter().map(|(_, id)| *id).collect();
+        let (content_types, content_ids): (Vec<String>, Vec<Uuid>) =
+            items.iter().map(|(ct, id)| (ct.0.as_ref().to_string(), *id)).unzip();
 
         // Use UNNEST to join the input list with the likes table, preserving input order, and fetch the created_at timestamps for liked items
         let rows = sqlx::query!(

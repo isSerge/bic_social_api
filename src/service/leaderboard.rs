@@ -1,5 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
+use tokio::task::JoinSet;
+
 use crate::{
     config::{AppConfig, ContentTypeRegistry},
     domain::ContentType,
@@ -7,6 +9,7 @@ use crate::{
 };
 
 /// Worker responsible for periodically calculating and updating the leaderboard in the cache.
+#[derive(Clone)]
 pub struct LeaderboardWorker {
     /// Application configuration for controlling worker behavior (e.g., update interval).
     config: Arc<AppConfig>,
@@ -55,21 +58,43 @@ impl LeaderboardWorker {
             ("all_time", None),
         ];
 
-        // For each time window, refresh the leaderboard for all content types
+        // Use a JoinSet to run all refresh tasks in parallel
+        let mut refresh_tasks = JoinSet::new();
+
+        // Refresh the global leaderboard for each time window in parallel.
         for (window_name, since) in &windows {
-            self.refresh_single_leaderboard(None, window_name, *since, max_limit).await;
+            let worker = self.clone();
+            let window_name = *window_name;
+            let since = *since;
+            refresh_tasks.spawn(async move {
+                worker.refresh_single_leaderboard(None, window_name, since, max_limit).await;
+            });
         }
 
-        // Refresh leaderboards for each content type and time window combination
+        // Refresh each content-type/time-window combination in parallel.
         for content_type in self.registry.get_all_content_types() {
             for (window_name, since) in &windows {
-                self.refresh_single_leaderboard(
-                    Some(content_type.clone()),
-                    window_name,
-                    *since,
-                    max_limit,
-                )
-                .await;
+                let worker = self.clone();
+                let content_type = content_type.clone();
+                let window_name = *window_name;
+                let since = *since;
+                refresh_tasks.spawn(async move {
+                    worker
+                        .refresh_single_leaderboard(
+                            Some(content_type),
+                            window_name,
+                            since,
+                            max_limit,
+                        )
+                        .await;
+                });
+            }
+        }
+
+        // Await all refresh tasks to complete before exiting the function, ensuring that all leaderboards are updated before the next interval. Log any task panics as errors.
+        while let Some(task_result) = refresh_tasks.join_next().await {
+            if let Err(error) = task_result {
+                tracing::error!(error = %error, "Leaderboard refresh task panicked");
             }
         }
     }
@@ -235,5 +260,37 @@ mod tests {
 
         // 3. Act: The worker must catch the Redis error, log a warning, and return cleanly.
         worker.refresh_single_leaderboard(Some(content_type), window, Some(since), limit).await;
+    }
+
+    #[tokio::test]
+    async fn test_refresh_all_leaderboards_refreshes_every_window_and_content_type() {
+        let registry = ContentTypeRegistry::from_base_urls([
+            ("post".to_string(), "http://content.local".to_string()),
+            ("bonus_hunter".to_string(), "http://content.local".to_string()),
+        ]);
+        let content_type_count = registry.get_all_content_types().len();
+        let expected_refreshes = 4 + (4 * content_type_count);
+
+        // Expect the worker to refresh each content-type/time-window combination, plus the global leaderboards for each time window. We don't care about the exact input parameters in this test, just that the correct number of refreshes happen to cover all combinations.
+        let mut mock_db = MockLikeRepository::new();
+        mock_db.expect_get_top_liked().times(expected_refreshes).returning(|content_type, _, _| {
+            Ok(content_type
+                .into_iter()
+                .map(|content_type| (content_type, Uuid::new_v4(), 100))
+                .collect())
+        });
+
+        // Expect the worker to attempt to update Redis for each refresh.
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache.expect_set_leaderboard().times(expected_refreshes).returning(|_, _, _| Ok(()));
+
+        let worker = LeaderboardWorker::new(
+            Arc::new(AppConfig::default()),
+            Arc::new(registry),
+            Arc::new(mock_db),
+            Arc::new(mock_cache),
+        );
+
+        worker.refresh_all_leaderboards(50).await;
     }
 }

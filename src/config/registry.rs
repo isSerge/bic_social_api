@@ -64,6 +64,14 @@ impl ContentTypeRegistry {
         self.base_urls.keys().map(|k| ContentType(Arc::from(k.clone()))).collect()
     }
 
+    /// Returns the unique upstream base URLs configured for content APIs.
+    pub fn upstream_urls(&self) -> Vec<String> {
+        let mut urls: Vec<String> = self.base_urls.values().cloned().collect();
+        urls.sort();
+        urls.dedup();
+        urls
+    }
+
     /// Helper for tests to create a registry from a list of content type to URL mappings, bypassing env vars
     #[cfg(test)]
     pub fn from_base_urls<I, K, V>(entries: I) -> Self

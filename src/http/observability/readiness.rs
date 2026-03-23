@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::Arc, time::Instant};
+use std::{borrow::Cow, collections::HashSet, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use deadpool_redis::{Pool, redis::cmd};
@@ -13,8 +13,8 @@ use super::metrics::AppMetrics;
 /// A single dependency failure captured during readiness probing.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct DependencyFailure {
-    pub dependency: String,
-    pub message: String,
+    pub dependency: Cow<'static, str>,
+    pub message: Cow<'static, str>,
 }
 
 /// Aggregated readiness result for the application and its external dependencies.
@@ -30,7 +30,11 @@ impl ReadinessReport {
     }
 
     /// Add a dependency failure to the readiness report.
-    pub fn record_failure(&mut self, dependency: impl Into<String>, message: impl Into<String>) {
+    pub fn record_failure(
+        &mut self,
+        dependency: impl Into<Cow<'static, str>>,
+        message: impl Into<Cow<'static, str>>,
+    ) {
         self.failures
             .push(DependencyFailure { dependency: dependency.into(), message: message.into() });
     }
@@ -78,8 +82,8 @@ impl RealReadinessProbe {
     /// Record a probe failure when a dependency check returns an error.
     fn record_probe_failure<E>(
         report: &mut ReadinessReport,
-        dependency: &str,
-        failure_prefix: &str,
+        dependency: &'static str,
+        failure_prefix: &'static str,
         result: Result<(), E>,
     ) where
         E: std::fmt::Display,

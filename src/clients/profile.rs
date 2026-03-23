@@ -1,3 +1,7 @@
+use std::time::Instant;
+
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use axum::http;
 use reqwest::StatusCode;
@@ -5,7 +9,9 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use super::circuit_breaker::CircuitBreaker;
-use crate::{clients::error::ClientError, config::CircuitBreakerConfig};
+use crate::{
+    clients::error::ClientError, config::CircuitBreakerConfig, http::observability::AppMetrics,
+};
 
 /// Response structure for profile validation
 #[derive(Debug, Deserialize)]
@@ -21,6 +27,7 @@ pub struct ProfileClient {
     http_client: reqwest::Client,
     base_url: String,
     breaker: CircuitBreaker,
+    metrics: Arc<AppMetrics>,
 }
 
 /// Trait to allow mocking in tests and to abstract away the implementation details of the profile validation logic.
@@ -37,24 +44,40 @@ impl ProfileClient {
         http_client: reqwest::Client,
         base_url: impl Into<String>,
         config: CircuitBreakerConfig,
+        metrics: Arc<AppMetrics>,
     ) -> Self {
         ProfileClient {
             http_client,
             base_url: base_url.into(),
-            breaker: CircuitBreaker::new("Profile API", config),
+            breaker: CircuitBreaker::new("Profile API", config, Arc::clone(&metrics)),
+            metrics,
         }
     }
 
     async fn execute_request(&self, token: &str) -> Result<Uuid, ClientError> {
+        let started_at = Instant::now();
         let url = format!("{}/v1/auth/validate", self.base_url.trim_end_matches('/'));
 
-        let response = self
+        let response = match self
             .http_client
             .get(&url)
             .header(http::header::AUTHORIZATION, format!("Bearer {}", token))
             .send()
             .await
-            .map_err(ClientError::Http)?;
+        {
+            Ok(response) => response,
+            Err(error) => {
+                self.metrics.observe_external_call("profile_api", "GET", "error", started_at);
+                return Err(ClientError::Http(error));
+            }
+        };
+
+        self.metrics.observe_external_call(
+            "profile_api",
+            "GET",
+            response.status().as_str(),
+            started_at,
+        );
 
         match response.status() {
             StatusCode::OK => {
@@ -109,6 +132,10 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    fn test_metrics() -> Arc<AppMetrics> {
+        Arc::new(AppMetrics::new())
+    }
+
     #[tokio::test]
     async fn validate_token_success() {
         let mock_server = MockServer::start().await;
@@ -132,6 +159,7 @@ mod tests {
             reqwest::Client::new(),
             mock_server.uri(),
             CircuitBreakerConfig::default(),
+            test_metrics(),
         );
 
         // Act & Assert
@@ -159,6 +187,7 @@ mod tests {
             reqwest::Client::new(),
             mock_server.uri(),
             CircuitBreakerConfig::default(),
+            test_metrics(),
         );
 
         let result = client.validate_token("invalid_token").await;
@@ -181,6 +210,7 @@ mod tests {
             reqwest::Client::new(),
             mock_server.uri(),
             CircuitBreakerConfig::default(),
+            test_metrics(),
         );
 
         let result = client.validate_token("any_token").await;
@@ -205,6 +235,7 @@ mod tests {
             reqwest::Client::new(),
             mock_server.uri(),
             CircuitBreakerConfig::default(),
+            test_metrics(),
         );
         let result = client.validate_token("valid_token").await;
 
@@ -227,7 +258,8 @@ mod tests {
             success_threshold: 1,
         };
 
-        let client = ProfileClient::new(reqwest::Client::new(), mock_server.uri(), config);
+        let client =
+            ProfileClient::new(reqwest::Client::new(), mock_server.uri(), config, test_metrics());
 
         let result1 = client.validate_token("valid_token").await;
         assert!(matches!(result1.unwrap_err(), ClientError::DependencyUnavailable(_)));
@@ -254,7 +286,8 @@ mod tests {
             success_threshold: 1,
         };
 
-        let client = ProfileClient::new(reqwest::Client::new(), mock_server.uri(), config);
+        let client =
+            ProfileClient::new(reqwest::Client::new(), mock_server.uri(), config, test_metrics());
 
         let result1 = client.validate_token("invalid_token").await;
         assert!(matches!(result1.unwrap_err(), ClientError::NotFound));

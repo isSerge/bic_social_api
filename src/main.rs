@@ -17,7 +17,10 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 use crate::{
     clients::{content::HttpContentClient, profile::ProfileClient},
     config::{AppConfig, ContentTypeRegistry},
-    http::AppState,
+    http::{
+        AppState,
+        observability::{AppMetrics, RealReadinessProbe},
+    },
     repository::{
         cache_repo::RedisCacheRepository,
         like_repo::{LikeRepository, PgLikeRepository},
@@ -68,7 +71,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create Like Repository, and Like Service
     let like_repo: Arc<dyn LikeRepository> =
         Arc::new(PgLikeRepository::new(writer_pool.clone(), reader_pool.clone())); // Cloning is cheap for PgPool
-    let cache_repo = Arc::new(RedisCacheRepository::new(redis_pool));
+    let metrics = Arc::new(AppMetrics::new());
+    let cache_repo = Arc::new(RedisCacheRepository::new(redis_pool.clone(), Arc::clone(&metrics)));
 
     // Initialize HTTP client and Profile API client
     let http_client = reqwest::Client::new();
@@ -76,10 +80,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         http_client.clone(),
         Arc::clone(&content_type_registry),
         config.circuit_breaker,
+        Arc::clone(&metrics),
     ));
 
     // Broadcaster for real-time updates (SSE)
     let broadcaster = Arc::new(Broadcaster::new(config.server.sse_channel_capacity));
+    let readiness = Arc::new(RealReadinessProbe::new(
+        writer_pool.clone(),
+        reader_pool.clone(),
+        i64::from(config.database.max_connections) * 2,
+        redis_pool,
+        http_client.clone(),
+        Arc::clone(&content_type_registry),
+        Arc::clone(&metrics),
+    ));
 
     // Create LikeService with all dependencies
     let like_service = LikeService::new(
@@ -88,13 +102,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cache_repo.clone(),
         content_client,
         Arc::clone(&broadcaster),
+        Arc::clone(&metrics),
     );
 
     // Initialize Profile API client for token validation in the auth middleware
     let profile_client = ProfileClient::new(
-        http_client.clone(),
+        http_client,
         config.clients.profile_url.clone(),
         config.circuit_breaker,
+        Arc::clone(&metrics),
     );
 
     // Create shared application state
@@ -105,6 +121,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         profile_client: Arc::new(profile_client),
         cache: cache_repo,
         broadcaster: Arc::clone(&broadcaster),
+        readiness,
+        metrics,
     };
 
     // Create the background worker

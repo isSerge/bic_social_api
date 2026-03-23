@@ -1,4 +1,10 @@
-use std::{convert::Infallible, time::Duration};
+use std::{
+    convert::Infallible,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use axum::{
     Extension, Json,
@@ -16,8 +22,38 @@ use uuid::Uuid;
 
 use crate::{
     domain::{DomainError, PaginationCursor},
-    http::{AppState, error::ApiError},
+    http::{AppState, error::ApiError, observability::AppMetrics},
 };
+
+// TODO: consider moving into separate module
+/// Custom stream wrapper to track active SSE connections for metrics purposes
+struct SseConnectionStream<S> {
+    inner: Pin<Box<S>>,
+    metrics: Arc<AppMetrics>,
+}
+
+impl<S> SseConnectionStream<S> {
+    fn new(stream: S, metrics: Arc<AppMetrics>) -> Self {
+        Self { inner: Box::pin(stream), metrics }
+    }
+}
+
+impl<S> Stream for SseConnectionStream<S>
+where
+    S: Stream<Item = Result<Event, Infallible>>,
+{
+    type Item = Result<Event, Infallible>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(cx)
+    }
+}
+
+impl<S> Drop for SseConnectionStream<S> {
+    fn drop(&mut self) {
+        self.metrics.decrement_sse_connections();
+    }
+}
 
 /// Like request DTO
 #[derive(Deserialize)]
@@ -373,6 +409,7 @@ pub async fn sse_stream(
     let heartbeat_interval = Duration::from_secs(state.config.app.heartbeat_interval_secs);
     let requested_content_type = query.content_type.clone();
     let requested_content_id = query.content_id;
+    state.metrics.increment_sse_connections();
 
     // Create a stream
     let stream = BroadcastStream::new(rx).timeout(heartbeat_interval).filter_map(move |result| {
@@ -407,13 +444,12 @@ pub async fn sse_stream(
         }
     });
 
-    Ok(Sse::new(stream))
+    Ok(Sse::new(SseConnectionStream::new(stream, Arc::clone(&state.metrics))))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     use axum::{
         Router,
@@ -429,7 +465,10 @@ mod tests {
         clients::{content::MockContentValidationClient, profile::ProfileClient},
         config::{AppConfig, ContentTypeRegistry},
         domain::{ContentType, LikeRecord},
-        http::AppState,
+        http::{
+            AppState,
+            observability::{AppMetrics, StaticReadinessProbe},
+        },
         repository::{cache_repo::MockCacheRepository, like_repo::MockLikeRepository},
         service::{broadcast::Broadcaster, like_service::LikeService},
     };
@@ -446,17 +485,20 @@ mod tests {
         let mock_like_repo = Arc::new(mock_repo);
         let mock_cache_repo = Arc::new(mock_cache_repo);
         let broadcaster = Arc::new(Broadcaster::new(config.server.sse_channel_capacity));
+        let metrics = Arc::new(AppMetrics::new());
         let like_service = Arc::new(LikeService::new(
             config.cache,
             mock_like_repo,
             mock_cache_repo.clone(),
             Arc::new(MockContentValidationClient::new()),
             Arc::clone(&broadcaster),
+            Arc::clone(&metrics),
         ));
         let profile_client = Arc::new(ProfileClient::new(
             reqwest::Client::new(),
             "http://mock-profile",
             config.circuit_breaker,
+            Arc::clone(&metrics),
         ));
 
         let state = AppState {
@@ -466,6 +508,8 @@ mod tests {
             profile_client,
             cache: mock_cache_repo,
             broadcaster,
+            readiness: Arc::new(StaticReadinessProbe::ready()),
+            metrics,
         };
 
         Router::new()

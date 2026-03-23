@@ -10,7 +10,10 @@ use crate::{
 pub mod error;
 mod handlers;
 mod middlewares;
+pub mod observability;
 pub mod router;
+
+use observability::{AppMetrics, ReadinessProbe};
 
 /// Application state shared across handlers.
 #[derive(Clone)]
@@ -27,4 +30,8 @@ pub struct AppState {
     pub cache: Arc<dyn CacheRepository>,
     /// Broadcaster for real-time updates (SSE)
     pub broadcaster: Arc<Broadcaster>,
+    /// Readiness probe used by health endpoints
+    pub readiness: Arc<dyn ReadinessProbe>,
+    /// Shared Prometheus metrics registry and instruments
+    pub metrics: Arc<AppMetrics>,
 }

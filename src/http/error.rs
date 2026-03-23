@@ -6,6 +6,7 @@ use thiserror::Error;
 use crate::clients::error::ClientError;
 use crate::config::ContentTypeRegistryError;
 use crate::domain::DomainError;
+use crate::http::observability::ReadinessReport;
 use crate::repository::error::RepoError;
 
 #[derive(Debug, Error)]
@@ -19,6 +20,12 @@ pub enum ApiError {
 
     #[error(transparent)]
     ContentTypeUnknown(#[from] ContentTypeRegistryError),
+
+    #[error("One or more required dependencies are unavailable")]
+    ReadinessFailed { report: ReadinessReport },
+
+    #[error("Failed to encode Prometheus metrics")]
+    MetricsEncoding,
 
     /* --- Layer Compositions --- */
     #[error(transparent)]
@@ -52,6 +59,21 @@ impl IntoResponse for ApiError {
                 self.to_string(),
                 json!({ "content_type": raw }),
             ),
+            ApiError::ReadinessFailed { report } => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "DEPENDENCY_UNAVAILABLE",
+                self.to_string(),
+                json!({ "failures": report.failures }),
+            ),
+            ApiError::MetricsEncoding => {
+                tracing::error!(error = %self, "Metrics encoding error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    "Unexpected internal error".to_string(),
+                    json!({}),
+                )
+            }
 
             // TODO: double check if these belong to domain
             // Domain layer mappings
@@ -161,3 +183,5 @@ fn normalize_details(details: Value) -> Value {
         _ => json!({}),
     }
 }
+
+// TODO: add tets

@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::config::CircuitBreakerConfig;
+use crate::http::observability::AppMetrics;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum State {
@@ -25,14 +26,21 @@ struct CircuitBreakerState {
 pub struct CircuitBreaker {
     name: String,
     config: CircuitBreakerConfig,
+    metrics: Arc<AppMetrics>,
     state: Arc<Mutex<CircuitBreakerState>>,
 }
 
 impl CircuitBreaker {
-    pub fn new(name: impl Into<String>, config: CircuitBreakerConfig) -> Self {
-        Self {
-            name: name.into(),
+    pub fn new(
+        name: impl Into<String>,
+        config: CircuitBreakerConfig,
+        metrics: Arc<AppMetrics>,
+    ) -> Self {
+        let name = name.into();
+        let breaker = Self {
+            name,
             config,
+            metrics,
             state: Arc::new(Mutex::new(CircuitBreakerState {
                 state: State::Closed,
                 consecutive_failures: 0,
@@ -40,7 +48,19 @@ impl CircuitBreaker {
                 opened_at: None,
                 recent_calls: VecDeque::new(),
             })),
-        }
+        };
+
+        breaker.record_state(State::Closed);
+        breaker
+    }
+
+    fn record_state(&self, state: State) {
+        let value = match state {
+            State::Closed => 0,
+            State::HalfOpen => 1,
+            State::Open => 2,
+        };
+        self.metrics.set_circuit_breaker_state(&self.name, value);
     }
 
     fn lock_state(&self) -> MutexGuard<'_, CircuitBreakerState> {
@@ -67,6 +87,7 @@ impl CircuitBreaker {
                         );
                         lock.state = State::HalfOpen;
                         lock.consecutive_successes = 0;
+                        self.record_state(State::HalfOpen);
                         return true;
                     }
                 }
@@ -99,6 +120,7 @@ impl CircuitBreaker {
                     lock.consecutive_failures = 0;
                     lock.consecutive_successes = 0;
                     lock.recent_calls.clear();
+                    self.record_state(State::Closed);
                 }
             }
             State::Open => {} // Should not happen, but safe to ignore
@@ -134,6 +156,7 @@ impl CircuitBreaker {
                     );
                     lock.state = State::Open;
                     lock.opened_at = Some(now);
+                    self.record_state(State::Open);
                 }
             }
             State::HalfOpen => {
@@ -144,10 +167,12 @@ impl CircuitBreaker {
                 );
                 lock.state = State::Open;
                 lock.opened_at = Some(now);
+                self.record_state(State::Open);
             }
             State::Open => {
                 // Already open, reset the recovery timer
                 lock.opened_at = Some(now);
+                self.record_state(State::Open);
             }
         }
     }
@@ -170,6 +195,10 @@ impl CircuitBreaker {
 mod tests {
     use super::*;
 
+    fn test_metrics() -> Arc<AppMetrics> {
+        Arc::new(AppMetrics::new())
+    }
+
     fn test_config() -> CircuitBreakerConfig {
         CircuitBreakerConfig {
             failure_threshold: 5,
@@ -180,7 +209,7 @@ mod tests {
 
     #[test]
     fn test_consecutive_failures_trip_circuit() {
-        let cb = CircuitBreaker::new("Test", test_config());
+        let cb = CircuitBreaker::new("Test", test_config(), test_metrics());
 
         for _ in 0..4 {
             cb.on_error();
@@ -194,7 +223,7 @@ mod tests {
 
     #[test]
     fn test_failure_rate_trips_circuit() {
-        let cb = CircuitBreaker::new("Test", test_config()); // failure_threshold is 5
+        let cb = CircuitBreaker::new("Test", test_config(), test_metrics()); // failure_threshold is 5
 
         // 5 calls: Error, Error, Success, Success, Error.
 
@@ -220,7 +249,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_recovery_flow() {
-        let cb = CircuitBreaker::new("Test", test_config());
+        let cb = CircuitBreaker::new("Test", test_config(), test_metrics());
 
         // 1. Trip the circuit
         for _ in 0..5 {

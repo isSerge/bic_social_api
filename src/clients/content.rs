@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use reqwest::StatusCode;
@@ -9,6 +10,7 @@ use crate::{
     clients::error::ClientError,
     config::{CircuitBreakerConfig, ContentTypeRegistry},
     domain::ContentType,
+    http::observability::AppMetrics,
 };
 
 /// Client for interacting with the Content API, specifically for content existence validation.
@@ -16,6 +18,7 @@ pub struct HttpContentClient {
     http_client: reqwest::Client,
     registry: Arc<ContentTypeRegistry>,
     breaker: CircuitBreaker,
+    metrics: Arc<AppMetrics>,
 }
 
 /// Trait to allow mocking in tests and to abstract away the implementation details of the content validation logic.
@@ -36,11 +39,13 @@ impl HttpContentClient {
         http_client: reqwest::Client,
         registry: Arc<ContentTypeRegistry>,
         config: CircuitBreakerConfig,
+        metrics: Arc<AppMetrics>,
     ) -> Self {
         HttpContentClient {
             http_client,
             registry,
-            breaker: CircuitBreaker::new("Content API", config),
+            breaker: CircuitBreaker::new("Content API", config, Arc::clone(&metrics)),
+            metrics,
         }
     }
 
@@ -50,11 +55,25 @@ impl HttpContentClient {
         content_type: &ContentType,
         content_id: Uuid,
     ) -> Result<(), ClientError> {
+        let started_at = Instant::now();
         let base_url = self.registry.get_url(content_type);
         let url =
             format!("{}/v1/{}/{}", base_url.trim_end_matches('/'), content_type.0, content_id);
 
-        let response = self.http_client.get(&url).send().await.map_err(ClientError::Http)?;
+        let response = match self.http_client.get(&url).send().await {
+            Ok(response) => response,
+            Err(error) => {
+                self.metrics.observe_external_call("content_api", "GET", "error", started_at);
+                return Err(ClientError::Http(error));
+            }
+        };
+
+        self.metrics.observe_external_call(
+            "content_api",
+            "GET",
+            response.status().as_str(),
+            started_at,
+        );
 
         match response.status() {
             StatusCode::OK => Ok(()),
@@ -103,8 +122,13 @@ impl ContentValidationClient for HttpContentClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http::observability::AppMetrics;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn test_metrics() -> Arc<AppMetrics> {
+        Arc::new(AppMetrics::new())
+    }
 
     // TODO: re-use
     fn content_type(raw: &str) -> ContentType {
@@ -143,6 +167,7 @@ mod tests {
             reqwest::Client::new(),
             registry,
             CircuitBreakerConfig::default(),
+            test_metrics(),
         );
         let result = client.validate_content(content_type, content_id).await;
 
@@ -165,6 +190,7 @@ mod tests {
             reqwest::Client::new(),
             registry,
             CircuitBreakerConfig::default(),
+            test_metrics(),
         );
         let content_type = content_type("post");
         let result = client.validate_content(content_type, content_id).await;
@@ -188,6 +214,7 @@ mod tests {
             reqwest::Client::new(),
             registry,
             CircuitBreakerConfig::default(),
+            test_metrics(),
         );
         let content_type = content_type("post");
         let result = client.validate_content(content_type, content_id).await;
@@ -211,6 +238,7 @@ mod tests {
             reqwest::Client::new(),
             registry,
             CircuitBreakerConfig::default(),
+            test_metrics(),
         );
         let content_type = content_type("invalid_type");
         let result = client.validate_content(content_type, content_id).await;
@@ -237,7 +265,8 @@ mod tests {
         };
 
         let registry = registry_for_mock_server(&mock_server, ["post"]);
-        let client = HttpContentClient::new(reqwest::Client::new(), registry, config);
+        let client =
+            HttpContentClient::new(reqwest::Client::new(), registry, config, test_metrics());
 
         // Call 1: Fails, but circuit remains Closed
         let content_type = content_type("post");
@@ -273,7 +302,8 @@ mod tests {
         };
 
         let registry = registry_for_mock_server(&mock_server, ["post"]);
-        let client = HttpContentClient::new(reqwest::Client::new(), registry, config);
+        let client =
+            HttpContentClient::new(reqwest::Client::new(), registry, config, test_metrics());
 
         // Call 1: Returns 404. This is a business logic error, NOT a network failure.
         let content_type = content_type("post");

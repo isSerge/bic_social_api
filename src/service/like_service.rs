@@ -9,6 +9,7 @@ use crate::config::CacheConfig;
 use crate::domain::{
     ContentType, DomainError, LikeEvent, LikeEventKind, LikeRecord, PaginationCursor,
 };
+use crate::http::observability::AppMetrics;
 use crate::repository::{cache_repo::CacheRepository, like_repo::LikeRepository};
 use crate::service::broadcast::Broadcaster;
 
@@ -19,6 +20,7 @@ pub struct LikeService {
     content_client: Arc<dyn ContentValidationClient>,
     config: CacheConfig,
     broadcaster: Arc<Broadcaster>,
+    metrics: Arc<AppMetrics>,
 }
 
 impl LikeService {
@@ -28,8 +30,9 @@ impl LikeService {
         cache: Arc<dyn CacheRepository>,
         content_client: Arc<dyn ContentValidationClient>,
         broadcaster: Arc<Broadcaster>,
+        metrics: Arc<AppMetrics>,
     ) -> Self {
-        Self { repo, cache, content_client, config, broadcaster }
+        Self { repo, cache, content_client, config, broadcaster, metrics }
     }
 
     /// Handles a like operation: validates the token, checks content existence, and records the like.
@@ -80,6 +83,8 @@ impl LikeService {
                     self.config.like_counts_ttl_secs,
                 )
                 .await;
+
+            self.metrics.observe_like(content_type.0.as_ref(), "like");
         }
 
         // Broadcast the like event to subscribers
@@ -117,6 +122,8 @@ impl LikeService {
                     self.config.like_counts_ttl_secs,
                 )
                 .await;
+
+            self.metrics.observe_like(content_type.0.as_ref(), "unlike");
 
             // Broadcast the unlike event to subscribers
             self.broadcaster.broadcast(LikeEvent {
@@ -245,6 +252,7 @@ impl LikeService {
 mod tests {
     use super::*;
     use crate::clients::content::MockContentValidationClient;
+    use crate::http::observability::AppMetrics;
     use crate::repository::cache_repo::MockCacheRepository;
     use crate::repository::error::RepoError;
     use crate::repository::like_repo::MockLikeRepository;
@@ -256,6 +264,10 @@ mod tests {
     // Helper to create a dummy ContentType
     fn content_type(raw: &str) -> ContentType {
         ContentType(Arc::from(raw.to_string()))
+    }
+
+    fn test_metrics() -> Arc<AppMetrics> {
+        Arc::new(AppMetrics::new())
     }
 
     #[tokio::test]
@@ -287,6 +299,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
         let result = service.like(user_id, ct, content_id).await;
 
@@ -314,6 +327,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
         let result = service.like(user_id, ct, content_id).await;
 
@@ -343,6 +357,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
 
         // Act
@@ -391,6 +406,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
 
         // Act
@@ -423,6 +439,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
 
         // Act
@@ -455,6 +472,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
 
         // Act
@@ -491,6 +509,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
 
         let result = service.get_count(ct, content_id).await;
@@ -532,6 +551,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
 
         let result = service.get_count(ct, content_id).await;
@@ -561,6 +581,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
 
         // Act
@@ -595,6 +616,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
 
         // Act
@@ -628,6 +650,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
 
         // Act
@@ -672,6 +695,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
 
         // Act
@@ -712,6 +736,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
 
         let result = service.get_top_liked(Some(content_type.clone()), Some(since), limit).await;
@@ -745,6 +770,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
 
         let result = service.get_top_liked(None, None, limit).await;
@@ -784,6 +810,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
 
         let result = service.get_top_liked(None, None, limit).await;
@@ -823,6 +850,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
         let result = service.get_user_likes(user_id, Some(content_type), Some(cursor), limit).await;
 
@@ -870,6 +898,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(mock_content_client),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
 
         let result = service.like(user_id, ct, content_id).await;
@@ -910,6 +939,7 @@ mod tests {
             Arc::new(mock_cache),
             Arc::new(mock_content_client),
             Arc::new(Broadcaster::new(16)),
+            test_metrics(),
         );
 
         let result = service.like(user_id, ct, content_id).await;

@@ -77,6 +77,7 @@ mod tests {
             profile::{MockProfileValidationClient, ProfileValidationClient},
         },
         config::{AppConfig, ContentTypeRegistry},
+        http::observability::{AppMetrics, StaticReadinessProbe},
         repository::{cache_repo::MockCacheRepository, like_repo::MockLikeRepository},
         service::{broadcast::Broadcaster, like_service::LikeService},
     };
@@ -92,12 +93,14 @@ mod tests {
         let registry = Arc::new(ContentTypeRegistry::default());
         let mock_like_repo = Arc::new(MockLikeRepository::new());
         let broadcaster = Arc::new(Broadcaster::new(config.server.sse_channel_capacity));
+        let metrics = Arc::new(AppMetrics::new());
         let like_service = Arc::new(LikeService::new(
             config.cache,
             mock_like_repo,
             mock_cache_arc.clone(),
             Arc::new(MockContentValidationClient::new()),
             Arc::clone(&broadcaster),
+            Arc::clone(&metrics),
         ));
 
         let state = AppState {
@@ -107,6 +110,8 @@ mod tests {
             profile_client,
             cache: mock_cache_arc.clone(),
             broadcaster,
+            readiness: Arc::new(StaticReadinessProbe::ready()),
+            metrics,
         };
 
         // A dummy handler to test the middleware - just returns the user_id from extensions if auth succeeds

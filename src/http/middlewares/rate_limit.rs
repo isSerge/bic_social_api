@@ -63,6 +63,7 @@ mod tests {
     use crate::{
         clients::{content::MockContentValidationClient, profile::MockProfileValidationClient},
         config::{AppConfig, ContentTypeRegistry},
+        http::observability::{AppMetrics, StaticReadinessProbe},
         repository::{cache_repo::MockCacheRepository, like_repo::MockLikeRepository},
         service::{broadcast::Broadcaster, like_service::LikeService},
     };
@@ -83,12 +84,14 @@ mod tests {
     fn app_for_test(mock_cache: Arc<MockCacheRepository>) -> Router {
         let config = Arc::new(AppConfig::default());
         let broadcaster = Arc::new(Broadcaster::new(config.server.sse_channel_capacity));
+        let metrics = Arc::new(AppMetrics::new());
         let like_service = Arc::new(LikeService::new(
             config.cache,
             Arc::new(MockLikeRepository::new()),
             mock_cache.clone(),
             Arc::new(MockContentValidationClient::new()),
             Arc::clone(&broadcaster),
+            Arc::clone(&metrics),
         ));
 
         let state = AppState {
@@ -98,6 +101,8 @@ mod tests {
             profile_client: Arc::new(MockProfileValidationClient::new()),
             cache: mock_cache,
             broadcaster,
+            readiness: Arc::new(StaticReadinessProbe::ready()),
+            metrics,
         };
 
         async fn dummy_handler() -> impl IntoResponse {

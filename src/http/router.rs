@@ -42,9 +42,11 @@ pub fn create_router(state: AppState) -> Router {
         .route("/health/ready", get(handlers::health::ready))
         .route("/metrics", get(handlers::metrics::metrics));
 
-    Router::new().merge(protected).merge(public).merge(diagnostic).with_state(state).layer(
-        ServiceBuilder::new().layer(middleware::from_fn(middlewares::request_id)).layer(
-            TraceLayer::new_for_http().make_span_with(|request: &Request| {
+    Router::new().merge(protected).merge(public).merge(diagnostic).with_state(state.clone()).layer(
+        ServiceBuilder::new()
+            .layer(middleware::from_fn(middlewares::request_id))
+            .layer(middleware::from_fn_with_state(state.clone(), middlewares::record_http_metrics))
+            .layer(TraceLayer::new_for_http().make_span_with(|request: &Request| {
                 let request_id = request
                     .extensions()
                     .get::<middlewares::RequestId>()
@@ -58,7 +60,6 @@ pub fn create_router(state: AppState) -> Router {
                     uri = %request.uri(),
                     request_id = %request_id,
                 )
-            }),
-        ),
+            })),
     )
 }

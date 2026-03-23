@@ -21,7 +21,8 @@ use tokio_stream::{
 use uuid::Uuid;
 
 use crate::{
-    domain::{DomainError, PaginationCursor},
+    config::ContentTypeRegistry,
+    domain::{ContentType, DomainError, PaginationCursor},
     http::{AppState, error::ApiError, observability::AppMetrics},
 };
 
@@ -233,6 +234,25 @@ pub struct BatchRequest {
     items: Vec<LikeRequest>,
 }
 
+/// Helper function to validate a batch of like requests, ensuring that the content types are valid and that the batch size does not exceed configured limits. Returns a vector of validated (ContentType, content_id) pairs or an ApiError if validation fails.
+fn validate_batch_items(
+    items: &[LikeRequest],
+    registry: &ContentTypeRegistry,
+    max_batch_size: usize,
+) -> Result<Vec<(ContentType, Uuid)>, ApiError> {
+    if items.len() > max_batch_size {
+        return Err(DomainError::BatchTooLarge { size: items.len(), max: max_batch_size }.into());
+    }
+
+    items
+        .iter()
+        .map(|item| {
+            let ct = registry.validate(&item.content_type)?;
+            Ok((ct, item.content_id))
+        })
+        .collect()
+}
+
 /// Batch count result DTO
 #[derive(Serialize)]
 pub struct BatchCountResult {
@@ -246,20 +266,11 @@ pub async fn batch_counts(
     State(state): State<AppState>,
     Json(payload): Json<BatchRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Validate batch size against configured maximum
-    let max = state.config.limits.max_batch_pairs;
-
-    if payload.items.len() > max {
-        // TODO: think where this error belongs
-        return Err(DomainError::BatchTooLarge { size: payload.items.len(), max }.into());
-    }
-
-    // Validate content types and prepare list of (ContentType, content_id) pairs
-    let mut validated_items = Vec::with_capacity(payload.items.len());
-    for item in &payload.items {
-        let ct = state.content_type_registry.validate(&item.content_type)?;
-        validated_items.push((ct, item.content_id));
-    }
+    let validated_items = validate_batch_items(
+        &payload.items,
+        &state.content_type_registry,
+        state.config.limits.max_batch_pairs,
+    )?;
 
     // Fetch counts from the like service
     let counts = state.like_service.batch_get_counts(&validated_items).await?;
@@ -294,20 +305,11 @@ pub async fn batch_statuses(
     Extension(user_id): Extension<Uuid>,
     Json(payload): Json<BatchRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Validate batch size against configured maximum
-    let max = state.config.limits.max_batch_pairs;
-
-    if payload.items.len() > max {
-        // TODO: think where this error belongs
-        return Err(DomainError::BatchTooLarge { size: payload.items.len(), max }.into());
-    }
-
-    // Validate content types and prepare list of (ContentType, content_id) pairs
-    let mut validated_items = Vec::with_capacity(payload.items.len());
-    for item in &payload.items {
-        let ct = state.content_type_registry.validate(&item.content_type)?;
-        validated_items.push((ct, item.content_id));
-    }
+    let validated_items = validate_batch_items(
+        &payload.items,
+        &state.content_type_registry,
+        state.config.limits.max_batch_pairs,
+    )?;
 
     // Fetch statuses from the like service
     let statuses = state.like_service.batch_get_statuses(user_id, &validated_items).await?;

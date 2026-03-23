@@ -53,14 +53,12 @@ pub trait CacheRepository: Send + Sync {
     ) -> Result<(), RepoError>;
 
     /// Checks if a request is allowed by the rate limiter.
-    /// Returns `Ok((true, 0))` if allowed.
-    /// Returns `Ok((false, retry_after_secs))` if rate limited.
     async fn check_rate_limit(
         &self,
         key: &str,
         limit: u32,
         window_secs: u64,
-    ) -> Result<(bool, u64), RepoError>;
+    ) -> Result<RateLimitStatus, RepoError>;
 
     /// Sets the leaderboard data for a specific content type and time window in the cache.
     async fn set_leaderboard(
@@ -84,6 +82,14 @@ pub trait CacheRepository: Send + Sync {
 pub struct RedisCacheRepository {
     pool: Pool,
     metrics: Arc<AppMetrics>,
+}
+
+/// Status returned by the rate limiter indicating whether the request is allowed, the current count of requests in the window, and how many seconds until the limit resets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateLimitStatus {
+    pub allowed: bool,
+    pub current_count: u32,
+    pub retry_after_secs: u64,
 }
 
 impl RedisCacheRepository {
@@ -296,11 +302,11 @@ impl CacheRepository for RedisCacheRepository {
         key: &str,
         limit: u32,
         window_secs: u64,
-    ) -> Result<(bool, u64), RepoError> {
-        // Return Ok((true, 0)) if Redis is unavailable to allow the request (fail open)
+    ) -> Result<RateLimitStatus, RepoError> {
+        // Return an allowed status if Redis is unavailable to allow the request (fail open)
         let Some(mut conn) = self.get_connection().await else {
             self.observe_cache_result("check_rate_limit", "error");
-            return Ok((true, 0));
+            return Ok(RateLimitStatus { allowed: true, current_count: 0, retry_after_secs: 0 });
         };
 
         // Use Redis script for atomicity
@@ -324,19 +330,16 @@ impl CacheRepository for RedisCacheRepository {
                 self.observe_cache_result("check_rate_limit", "hit");
                 // If TTL is negative (key missing or no expiry), fallback to window_secs
                 let ttl = if ttl > 0 { ttl } else { window_secs };
-
-                if count > limit {
-                    // Blocked: return false and the seconds remaining until reset.
-                    Ok((false, ttl))
-                } else {
-                    // Allowed
-                    Ok((true, 0))
-                }
+                Ok(RateLimitStatus {
+                    allowed: count <= limit,
+                    current_count: count,
+                    retry_after_secs: ttl,
+                })
             }
             Err(e) => {
                 tracing::warn!(error = %e, key = %key, "Redis rate limit script failed");
                 self.observe_cache_result("check_rate_limit", "error");
-                return Ok((true, 0)); // Fail open on error
+                Ok(RateLimitStatus { allowed: true, current_count: 0, retry_after_secs: 0 })
             }
         }
     }
@@ -550,7 +553,10 @@ mod tests {
         let result = cache.check_rate_limit("test_key", 5, 60).await;
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), (true, 0));
+        assert_eq!(
+            result.unwrap(),
+            RateLimitStatus { allowed: true, current_count: 0, retry_after_secs: 0 }
+        );
     }
 
     #[tokio::test]

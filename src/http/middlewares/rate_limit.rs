@@ -1,17 +1,24 @@
 use std::net::SocketAddr;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::{
     extract::{ConnectInfo, Request, State},
+    http::{HeaderValue, header::HeaderName},
     middleware::Next,
+    response::IntoResponse,
     response::Response,
 };
 use reqwest::Method;
 use uuid::Uuid;
 
 use crate::http::{AppState, error::ApiError};
+use crate::repository::cache_repo::RateLimitStatus;
 
 // TODO: consider adding to config
 const ONE_MINUTE_WINDOW: u64 = 60; // Window size in seconds
+const RATE_LIMIT_LIMIT_HEADER: HeaderName = HeaderName::from_static("x-ratelimit-limit");
+const RATE_LIMIT_REMAINING_HEADER: HeaderName = HeaderName::from_static("x-ratelimit-remaining");
+const RATE_LIMIT_RESET_HEADER: HeaderName = HeaderName::from_static("x-ratelimit-reset");
 
 /// Middleware to enforce rate limits based on IP for reads and User ID for writes.
 /// Reads (GET) are limited per IP, while writes (POST, PUT, DELETE, PATCH) are limited per authenticated user.
@@ -36,15 +43,37 @@ pub async fn rate_limiter(
     };
 
     // Check the rate limit for this key (IP or user token)
-    let (allowed, retry_after_secs) =
-        state.cache.check_rate_limit(&key, limit, ONE_MINUTE_WINDOW).await?;
+    let rate_limit = state.cache.check_rate_limit(&key, limit, ONE_MINUTE_WINDOW).await?;
 
-    if !allowed {
-        // Return a 429 Too Many Requests with the retry_after info
-        return Err(ApiError::RateLimited { retry_after_secs });
+    if !rate_limit.allowed {
+        let mut response =
+            ApiError::RateLimited { retry_after_secs: rate_limit.retry_after_secs }.into_response();
+        apply_rate_limit_headers(&mut response, limit, rate_limit);
+        return Ok(response);
     }
 
-    Ok(next.run(req).await)
+    let mut response = next.run(req).await;
+    apply_rate_limit_headers(&mut response, limit, rate_limit);
+
+    Ok(response)
+}
+
+fn apply_rate_limit_headers(response: &mut Response, limit: u32, rate_limit: RateLimitStatus) {
+    let remaining = limit.saturating_sub(rate_limit.current_count);
+    let reset_at = SystemTime::now()
+        .checked_add(Duration::from_secs(rate_limit.retry_after_secs))
+        .unwrap_or(SystemTime::now())
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    response.headers_mut().insert(RATE_LIMIT_LIMIT_HEADER.clone(), HeaderValue::from(limit));
+    response
+        .headers_mut()
+        .insert(RATE_LIMIT_REMAINING_HEADER.clone(), HeaderValue::from(remaining));
+    if let Ok(value) = HeaderValue::from_str(&reset_at.to_string()) {
+        response.headers_mut().insert(RATE_LIMIT_RESET_HEADER.clone(), value);
+    }
 }
 
 #[cfg(test)]
@@ -69,6 +98,18 @@ mod tests {
     };
 
     use super::*;
+
+    /// Helper function to extract the rate limit reset value from a response
+    fn rate_limit_reset_value(response: &Response) -> u64 {
+        response
+            .headers()
+            .get(RATE_LIMIT_RESET_HEADER)
+            .expect("x-ratelimit-reset header")
+            .to_str()
+            .expect("valid x-ratelimit-reset value")
+            .parse::<u64>()
+            .expect("numeric x-ratelimit-reset value")
+    }
 
     /// Helper function to create a test socket address
     fn test_socket_addr() -> SocketAddr {
@@ -129,7 +170,9 @@ mod tests {
                 eq(ONE_MINUTE_WINDOW),
             )
             .times(1)
-            .returning(|_, _, _| Ok((true, 0)));
+            .returning(|_, _, _| {
+                Ok(RateLimitStatus { allowed: true, current_count: 1, retry_after_secs: 60 })
+            });
 
         let app = app_for_test(Arc::new(mock_cache));
 
@@ -140,6 +183,15 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(
+            response.headers().get(RATE_LIMIT_LIMIT_HEADER).unwrap(),
+            &AppConfig::default().limits.read_per_minute.to_string()
+        );
+        assert_eq!(
+            response.headers().get(RATE_LIMIT_REMAINING_HEADER).unwrap(),
+            &(AppConfig::default().limits.read_per_minute - 1).to_string()
+        );
+        assert!(rate_limit_reset_value(&response) > 0);
     }
 
     #[tokio::test]
@@ -157,7 +209,9 @@ mod tests {
                 eq(ONE_MINUTE_WINDOW),
             )
             .times(1)
-            .returning(|_, _, _| Ok((true, 0)));
+            .returning(|_, _, _| {
+                Ok(RateLimitStatus { allowed: true, current_count: 1, retry_after_secs: 60 })
+            });
 
         let app = app_for_test(Arc::new(mock_cache)).layer(user_id_extension(user_id));
 
@@ -168,23 +222,65 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(
+            response.headers().get(RATE_LIMIT_LIMIT_HEADER).unwrap(),
+            &AppConfig::default().limits.write_per_minute.to_string()
+        );
+        assert_eq!(
+            response.headers().get(RATE_LIMIT_REMAINING_HEADER).unwrap(),
+            &(AppConfig::default().limits.write_per_minute - 1).to_string()
+        );
+        assert!(rate_limit_reset_value(&response) > 0);
+    }
+
+    #[tokio::test]
+    async fn test_allowed_request_at_limit_sets_zero_remaining() {
+        let addr = test_socket_addr();
+        let limit = AppConfig::default().limits.read_per_minute;
+        let expected_key = format!("rate:read:ip:{}", addr.ip());
+
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_check_rate_limit()
+            .with(eq(expected_key), eq(limit), eq(ONE_MINUTE_WINDOW))
+            .times(1)
+            .returning(move |_, _, _| {
+                Ok(RateLimitStatus { allowed: true, current_count: limit, retry_after_secs: 60 })
+            });
+
+        let app = app_for_test(Arc::new(mock_cache));
+
+        let mut request =
+            Request::builder().method(http::Method::GET).uri("/test").body(Body::empty()).unwrap();
+        request.extensions_mut().insert(ConnectInfo(addr));
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(response.headers().get(RATE_LIMIT_LIMIT_HEADER).unwrap(), &limit.to_string());
+        assert_eq!(response.headers().get(RATE_LIMIT_REMAINING_HEADER).unwrap(), "0");
+        assert!(rate_limit_reset_value(&response) > 0);
     }
 
     #[tokio::test]
     async fn test_rate_limit_exceeded_returns_429_with_retry_header() {
         let addr = test_socket_addr();
         let expected_key = format!("rate:read:ip:{}", addr.ip());
+        let before = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let limit = AppConfig::default().limits.read_per_minute;
 
         let mut mock_cache = MockCacheRepository::new();
         mock_cache
             .expect_check_rate_limit()
-            .with(
-                eq(expected_key),
-                eq(AppConfig::default().limits.read_per_minute),
-                eq(ONE_MINUTE_WINDOW),
-            )
+            .with(eq(expected_key), eq(limit), eq(ONE_MINUTE_WINDOW))
             .times(1)
-            .returning(|_, _, _| Ok((false, 42)));
+            .returning(move |_, _, _| {
+                Ok(RateLimitStatus {
+                    allowed: false,
+                    current_count: limit + 1,
+                    retry_after_secs: 42,
+                }) // Simulate limit exceeded with 42 seconds until reset
+            });
 
         let app = app_for_test(Arc::new(mock_cache));
 
@@ -196,6 +292,42 @@ mod tests {
 
         assert_eq!(response.status(), http::StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers().get(reqwest::header::RETRY_AFTER).unwrap(), "42");
+        assert_eq!(response.headers().get(RATE_LIMIT_LIMIT_HEADER).unwrap(), &limit.to_string());
+        assert_eq!(response.headers().get(RATE_LIMIT_REMAINING_HEADER).unwrap(), "0");
+        assert!(rate_limit_reset_value(&response) >= before + 42);
+    }
+
+    #[tokio::test]
+    async fn test_fail_open_still_sets_rate_limit_headers() {
+        let addr = test_socket_addr();
+        let expected_key = format!("rate:read:ip:{}", addr.ip());
+        let limit = AppConfig::default().limits.read_per_minute;
+        let before = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_check_rate_limit()
+            .with(eq(expected_key), eq(limit), eq(ONE_MINUTE_WINDOW))
+            .times(1)
+            .returning(|_, _, _| {
+                Ok(RateLimitStatus { allowed: true, current_count: 0, retry_after_secs: 0 })
+            });
+
+        let app = app_for_test(Arc::new(mock_cache));
+
+        let mut request =
+            Request::builder().method(http::Method::GET).uri("/test").body(Body::empty()).unwrap();
+        request.extensions_mut().insert(ConnectInfo(addr));
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(response.headers().get(RATE_LIMIT_LIMIT_HEADER).unwrap(), &limit.to_string());
+        assert_eq!(
+            response.headers().get(RATE_LIMIT_REMAINING_HEADER).unwrap(),
+            &limit.to_string()
+        );
+        assert!(rate_limit_reset_value(&response) >= before);
     }
 
     #[tokio::test]

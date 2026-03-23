@@ -11,7 +11,7 @@ mod service;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use deadpool_redis::Runtime;
-use tokio::{net::TcpListener, signal};
+use tokio::{net::TcpListener, signal, sync::watch, task::JoinHandle};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
@@ -122,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cache: cache_repo,
         broadcaster: Arc::clone(&broadcaster),
         readiness,
-        metrics,
+        metrics: Arc::clone(&metrics),
     };
 
     // Create the background worker
@@ -133,7 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&state.cache),
     );
 
-    tokio::spawn(async move {
+    let leaderboard_worker_handle = tokio::spawn(async move {
         leaderboard_worker.start().await;
     });
 
@@ -145,31 +145,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!(service = "social-api", "Server listening on {}", addr);
 
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
     // Serve the application with graceful shutdown
     let server = axum::serve(
         listener,
         // Use into_make_service_with_connect_info to get client IPs for rate limiting
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal());
+    .with_graceful_shutdown(wait_for_shutdown(shutdown_rx));
 
     let shutdown_timeout = Duration::from_secs(config.server.shutdown_timeout_secs);
+    let server_handle = tokio::spawn(async move { server.await });
 
-    // TODO: flush metrics, close database connections, etc. during shutdown
-
-    if let Err(_) = tokio::time::timeout(shutdown_timeout, server).await {
-        tracing::warn!(
-            service = "social-api",
-            "Graceful shutdown timed out after {} seconds. Forcing exit.",
-            shutdown_timeout.as_secs()
-        );
-    } else {
-        tracing::info!(service = "social-api", "Server drained cleanly.");
-    }
-
-    // Shutdown broadcaster to close all SSE connections
-    tracing::info!(service = "social-api", "Shutting down SSE broadcaster...");
-    broadcaster.shutdown();
+    shutdown_signal().await;
+    initiate_shutdown(
+        &shutdown_tx,
+        &broadcaster,
+        leaderboard_worker_handle,
+        &metrics,
+        server_handle,
+        shutdown_timeout,
+    )
+    .await;
 
     // Close database connections
     tracing::info!(service = "social-api", "Closing database connections...");
@@ -205,5 +203,88 @@ async fn shutdown_signal() {
         _ = terminate => {
             tracing::info!(service = "social-api", "Received SIGTERM, initiating graceful shutdown...");
         },
+    }
+}
+
+/// Waits for the shutdown signal to be triggered via the watch channel
+async fn wait_for_shutdown(mut shutdown_rx: watch::Receiver<bool>) {
+    if *shutdown_rx.borrow() {
+        return;
+    }
+
+    let _ = shutdown_rx.changed().await;
+}
+
+/// Initiates the shutdown sequence
+async fn initiate_shutdown(
+    shutdown_tx: &watch::Sender<bool>,
+    broadcaster: &Broadcaster,
+    leaderboard_worker_handle: JoinHandle<()>,
+    metrics: &AppMetrics,
+    server_handle: JoinHandle<std::io::Result<()>>,
+    shutdown_timeout: Duration,
+) {
+    let _ = shutdown_tx.send(true);
+
+    stop_leaderboard_worker(leaderboard_worker_handle).await;
+
+    tracing::info!(service = "social-api", "Shutting down SSE broadcaster...");
+    broadcaster.shutdown();
+
+    match tokio::time::timeout(shutdown_timeout, server_handle).await {
+        Ok(Ok(Ok(()))) => {
+            tracing::info!(service = "social-api", "Server drained cleanly.");
+        }
+        Ok(Ok(Err(error))) => {
+            tracing::error!(service = "social-api", error = %error, "Server exited with error during shutdown");
+        }
+        Ok(Err(error)) => {
+            tracing::error!(service = "social-api", error = %error, "Server task join failed during shutdown");
+        }
+        Err(_) => {
+            tracing::warn!(
+                service = "social-api",
+                "Graceful shutdown timed out after {} seconds. Forcing exit.",
+                shutdown_timeout.as_secs()
+            );
+        }
+    }
+
+    flush_metrics(metrics);
+}
+
+/// Helper function to stop the leaderboard worker gracefully, waiting for it to finish any in-progress work and logging the outcome.
+async fn stop_leaderboard_worker(leaderboard_worker_handle: JoinHandle<()>) {
+    tracing::info!(service = "social-api", "Stopping leaderboard worker...");
+    leaderboard_worker_handle.abort();
+
+    match leaderboard_worker_handle.await {
+        Err(error) if error.is_cancelled() => {
+            tracing::info!(service = "social-api", "Leaderboard worker stopped.");
+        }
+        Err(error) => {
+            tracing::warn!(service = "social-api", error = %error, "Leaderboard worker ended unexpectedly during shutdown");
+        }
+        Ok(()) => {
+            tracing::info!(service = "social-api", "Leaderboard worker finished cleanly.");
+        }
+    }
+}
+
+/// Helper function to flush the final metrics snapshot during shutdown, logging the size and content of the rendered metrics for observability.
+fn flush_metrics(metrics: &AppMetrics) {
+    match metrics.render() {
+        Ok(body) => {
+            tracing::info!(
+                service = "social-api",
+                metrics_bytes = body.len(),
+                metrics_lines = body.lines().count(),
+                "Rendered final Prometheus metrics snapshot"
+            );
+            tracing::debug!(service = "social-api", metrics_snapshot = %body, "Final Prometheus metrics snapshot");
+        }
+        Err(error) => {
+            tracing::warn!(service = "social-api", error = %error, "Failed to render final Prometheus metrics snapshot");
+        }
     }
 }

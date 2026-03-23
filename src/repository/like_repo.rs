@@ -653,4 +653,37 @@ mod tests {
 
         teardown_test_context(ctx).await;
     }
+
+    #[tokio::test]
+    async fn test_concurrent_likes_race_condition() {
+        let ctx = setup_test_context().await;
+        let repo = ctx.repo.clone();
+        let ct = content_type("post");
+        let content_id = Uuid::new_v4();
+
+        // Spawn 100 concurrent like requests for the same content item from different users
+        let mut set = tokio::task::JoinSet::new();
+
+        for _ in 0..100 {
+            let repo_clone = repo.clone();
+            let ct_clone = ct.clone();
+            let user_id = Uuid::new_v4(); // Different user every time
+
+            // Spawn tasks directly into the JoinSet
+            set.spawn(async move {
+                repo_clone.insert_like(user_id, ct_clone, content_id).await.unwrap();
+            });
+        }
+
+        // Wait for all 100 concurrent requests to finish
+        while let Some(res) = set.join_next().await {
+            res.expect("Task panicked"); // Handles tokio task panics
+        }
+
+        // Verify the DB count is EXACTLY 100
+        let final_count = repo.get_count(ct, content_id).await.unwrap();
+        assert_eq!(final_count, 100, "Race condition detected: Count should be exactly 100");
+
+        teardown_test_context(ctx).await;
+    }
 }

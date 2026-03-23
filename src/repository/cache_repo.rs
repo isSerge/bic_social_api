@@ -4,11 +4,15 @@ use crate::domain::ContentType;
 use crate::http::observability::AppMetrics;
 use crate::repository::error::RepoError;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use deadpool_redis::{
     Connection, Pool,
     redis::{AsyncCommands, Script},
 };
 use uuid::Uuid;
+
+// Sentinel value used in the cache to represent an unliked status, since we want to distinguish between "not in cache" and "cached as unliked".
+const UNLIKED_STATUS_SENTINEL: &str = "0";
 
 /// Repository trait for caching like counts and other related data.
 #[cfg_attr(test, mockall::automock)]
@@ -41,6 +45,24 @@ pub trait CacheRepository: Send + Sync {
     async fn set_batch_counts(
         &self,
         items: &[(ContentType, Uuid, i64)],
+        ttl_secs: u64,
+    ) -> Result<(), RepoError>;
+
+    /// Gets a short-lived cached user-specific like status. Returns None on cache miss.
+    async fn get_like_status(
+        &self,
+        user_id: Uuid,
+        content_type: ContentType,
+        content_id: Uuid,
+    ) -> Result<Option<CachedLikeStatus>, RepoError>;
+
+    /// Sets a short-lived cached user-specific like status.
+    async fn set_like_status(
+        &self,
+        user_id: Uuid,
+        content_type: ContentType,
+        content_id: Uuid,
+        status: CachedLikeStatus,
         ttl_secs: u64,
     ) -> Result<(), RepoError>;
 
@@ -120,6 +142,13 @@ pub struct RateLimitStatus {
     pub retry_after_secs: u64,
 }
 
+/// Short-lived cached like status used to hide replica lag for immediate status reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CachedLikeStatus {
+    Liked(DateTime<Utc>),
+    Unliked,
+}
+
 impl RedisCacheRepository {
     pub fn new(pool: Pool, metrics: Arc<AppMetrics>) -> Self {
         RedisCacheRepository { pool, metrics }
@@ -133,6 +162,11 @@ impl RedisCacheRepository {
     /// Helper to consistently format the token cache key
     fn token_key(token: &str) -> String {
         format!("likes:token:{}", token)
+    }
+
+    /// Helper function to generate Redis keys for user-specific like status.
+    fn like_status_key(user_id: Uuid, content_type: ContentType, content_id: Uuid) -> String {
+        format!("like_status:{}:{}:{}", user_id, content_type.0, content_id)
     }
 
     /// Helper function to generate Redis keys for count recomputation locks to prevent thundering herd on cache misses.
@@ -297,6 +331,81 @@ impl CacheRepository for RedisCacheRepository {
             self.observe_cache_result("set_batch_counts", "error");
         } else {
             self.observe_cache_result("set_batch_counts", "hit");
+        }
+
+        Ok(())
+    }
+
+    async fn get_like_status(
+        &self,
+        user_id: Uuid,
+        content_type: ContentType,
+        content_id: Uuid,
+    ) -> Result<Option<CachedLikeStatus>, RepoError> {
+        let Some(mut conn) = self.get_connection().await else {
+            self.observe_cache_result("get_like_status", "error");
+            return Ok(None);
+        };
+
+        let key = Self::like_status_key(user_id, content_type, content_id);
+
+        match conn.get::<_, Option<String>>(&key).await {
+            // If the sentinel value is found, it means the user has unliked the content. We return a specific Unliked status in this case.
+            Ok(Some(value)) if value == UNLIKED_STATUS_SENTINEL => {
+                self.observe_cache_result("get_like_status", "hit");
+                Ok(Some(CachedLikeStatus::Unliked))
+            }
+            // If a timestamp string is found, we attempt to parse it. If parsing succeeds, we return a Liked status with the timestamp. If parsing fails, we log a warning and treat it as a cache miss by returning Ok(None).
+            Ok(Some(value)) => match DateTime::parse_from_rfc3339(&value) {
+                Ok(timestamp) => {
+                    self.observe_cache_result("get_like_status", "hit");
+                    Ok(Some(CachedLikeStatus::Liked(timestamp.with_timezone(&Utc))))
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, key = %key, value = %value, "Redis cached like status payload was invalid");
+                    self.observe_cache_result("get_like_status", "miss");
+                    Ok(None)
+                }
+            },
+            // If the key is not found, we treat it as a cache miss and return Ok(None).
+            Ok(None) => {
+                self.observe_cache_result("get_like_status", "miss");
+                Ok(None)
+            }
+            // If there was an error communicating with Redis, we log a warning and return Ok(None) to allow the application to function without cache.
+            Err(error) => {
+                tracing::warn!(error = %error, key = %key, "Redis GET for cached like status failed");
+                self.observe_cache_result("get_like_status", "error");
+                Ok(None)
+            }
+        }
+    }
+
+    async fn set_like_status(
+        &self,
+        user_id: Uuid,
+        content_type: ContentType,
+        content_id: Uuid,
+        status: CachedLikeStatus,
+        ttl_secs: u64,
+    ) -> Result<(), RepoError> {
+        let Some(mut conn) = self.get_connection().await else {
+            self.observe_cache_result("set_like_status", "error");
+            return Ok(());
+        };
+
+        let key = Self::like_status_key(user_id, content_type, content_id);
+        let value = match status {
+            CachedLikeStatus::Liked(timestamp) => timestamp.to_rfc3339(),
+            CachedLikeStatus::Unliked => UNLIKED_STATUS_SENTINEL.to_string(),
+        };
+
+        // If there was an error setting the value in Redis, we log a warning but do not return an error to allow the application to function without cache. We also record the cache operation result for metrics.
+        if let Err(error) = conn.set_ex::<_, _, ()>(&key, value, ttl_secs).await {
+            tracing::warn!(error = %error, key = %key, "Redis SETEX for cached like status failed");
+            self.observe_cache_result("set_like_status", "error");
+        } else {
+            self.observe_cache_result("set_like_status", "hit");
         }
 
         Ok(())
@@ -697,6 +806,34 @@ mod tests {
         ];
 
         let result = cache.set_batch_counts(&items, 300).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_get_like_status_degrades_gracefully_when_redis_is_down() {
+        let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
+
+        let result =
+            cache.get_like_status(Uuid::new_v4(), content_type("post"), Uuid::new_v4()).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_set_like_status_degrades_gracefully_when_redis_is_down() {
+        let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
+
+        let result = cache
+            .set_like_status(
+                Uuid::new_v4(),
+                content_type("post"),
+                Uuid::new_v4(),
+                CachedLikeStatus::Unliked,
+                5,
+            )
+            .await;
 
         assert!(result.is_ok());
     }

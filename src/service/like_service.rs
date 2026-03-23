@@ -12,7 +12,10 @@ use crate::domain::{
     ContentType, DomainError, LikeEvent, LikeEventKind, LikeRecord, PaginationCursor,
 };
 use crate::http::observability::AppMetrics;
-use crate::repository::{cache_repo::CacheRepository, like_repo::LikeRepository};
+use crate::repository::{
+    cache_repo::{CacheRepository, CachedLikeStatus},
+    like_repo::LikeRepository,
+};
 use crate::service::broadcast::Broadcaster;
 
 const COUNT_CACHE_LOCK_TTL_SECS: u64 = 1;
@@ -78,6 +81,18 @@ impl LikeService {
         let (already_existed, new_count, timestamp) =
             self.repo.insert_like(user_id, content_type.clone(), content_id).await?;
 
+        // Cache the like status with a short TTL to mask replication lag after writes.
+        let _ = self
+            .cache
+            .set_like_status(
+                user_id,
+                content_type.clone(),
+                content_id,
+                CachedLikeStatus::Liked(timestamp),
+                self.config.user_status_ttl_secs,
+            )
+            .await;
+
         // Update cache if this was a new like
         if !already_existed {
             let _ = self
@@ -116,6 +131,18 @@ impl LikeService {
     ) -> Result<(bool, i64), DomainError> {
         let (was_liked, new_count) =
             self.repo.delete_like(user_id, content_type.clone(), content_id).await?;
+
+        // Cache the unlike status with a short TTL to mask replication lag after writes.
+        let _ = self
+            .cache
+            .set_like_status(
+                user_id,
+                content_type.clone(),
+                content_id,
+                CachedLikeStatus::Unliked,
+                self.config.user_status_ttl_secs,
+            )
+            .await;
 
         // Update cache if there was an actual like removed
         if was_liked {
@@ -231,13 +258,22 @@ impl LikeService {
 
     /// Retrieves the like status for a specific user and content item.
     /// Returns the timestamp of when the user liked the item, or None if not liked.
-    /// Does not cache user-specific like status
+    /// Uses a short-lived Redis cache to mask asynchronous replication lag after writes.
     pub async fn get_status(
         &self,
         user_id: Uuid,
         content_type: ContentType,
         content_id: Uuid,
     ) -> Result<Option<DateTime<Utc>>, DomainError> {
+        if let Some(status) =
+            self.cache.get_like_status(user_id, content_type.clone(), content_id).await?
+        {
+            return Ok(match status {
+                CachedLikeStatus::Liked(timestamp) => Some(timestamp),
+                CachedLikeStatus::Unliked => None,
+            });
+        }
+
         let status = self.repo.get_status(user_id, content_type, content_id).await?;
 
         Ok(status)
@@ -393,6 +429,17 @@ mod tests {
 
         let mut mock_cache = MockCacheRepository::new();
         mock_cache.expect_get_content_exists().times(1).returning(|_, _| Ok(Some(true)));
+        mock_cache
+            .expect_set_like_status()
+            .with(
+                eq(user_id),
+                eq(ct.clone()),
+                eq(content_id),
+                eq(CachedLikeStatus::Liked(timestamp)),
+                eq(config.user_status_ttl_secs),
+            )
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(()));
         // NEW like, MUST update the cache
         mock_cache
             .expect_set_count()
@@ -425,7 +472,18 @@ mod tests {
 
         let mut mock_cache = MockCacheRepository::new();
         mock_cache.expect_get_content_exists().times(1).returning(|_, _| Ok(Some(true)));
-        // ALREADY EXISTED (true), it MUST NOT call Redis
+        mock_cache
+            .expect_set_like_status()
+            .with(
+                eq(user_id),
+                eq(ct.clone()),
+                eq(content_id),
+                eq(CachedLikeStatus::Liked(timestamp)),
+                eq(CacheConfig::default().user_status_ttl_secs),
+            )
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(()));
+        // ALREADY EXISTED (true), it MUST NOT call the count cache
         mock_cache.expect_set_count().times(0);
 
         let service = LikeService::new(
@@ -457,6 +515,7 @@ mod tests {
             .returning(|_, _, _| Err(RepoError::Db(SqlxError::RowNotFound)));
 
         mock_cache.expect_get_content_exists().times(1).returning(|_, _| Ok(Some(true)));
+        mock_cache.expect_set_like_status().times(0);
 
         let service = LikeService::new(
             CacheConfig::default(),
@@ -496,6 +555,17 @@ mod tests {
 
         // EXISTING like was removed, MUST update the cache
         let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_set_like_status()
+            .with(
+                eq(user_id),
+                eq(ct.clone()),
+                eq(content_id),
+                eq(CachedLikeStatus::Unliked),
+                eq(config.user_status_ttl_secs),
+            )
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(()));
         mock_cache
             .expect_set_count()
             .with(
@@ -537,6 +607,17 @@ mod tests {
         mock_repo.expect_delete_like().times(1).returning(move |_, _, _| Ok((false, 42))); // Returns: (was_liked=false, count)
 
         let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_set_like_status()
+            .with(
+                eq(user_id),
+                eq(ct.clone()),
+                eq(content_id),
+                eq(CachedLikeStatus::Unliked),
+                eq(CacheConfig::default().user_status_ttl_secs),
+            )
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(()));
         // NEVER EXISTED (false), it MUST NOT call Redis
         mock_cache.expect_set_count().times(0);
 
@@ -572,6 +653,9 @@ mod tests {
             .expect_delete_like()
             .times(1)
             .returning(|_, _, _| Err(RepoError::Db(SqlxError::RowNotFound)));
+
+        let mut mock_cache = mock_cache;
+        mock_cache.expect_set_like_status().times(0);
 
         let service = LikeService::new(
             CacheConfig::default(),
@@ -728,7 +812,12 @@ mod tests {
         let content_type = content_type("post");
         let content_id = Uuid::new_v4();
         let expected_time = Utc.with_ymd_and_hms(2026, 2, 2, 17, 0, 0).unwrap();
-        let mock_cache = MockCacheRepository::new();
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_get_like_status()
+            .with(eq(user_id), eq(content_type.clone()), eq(content_id))
+            .times(1)
+            .returning(|_, _, _| Ok(None));
         let mut mock_repo = MockLikeRepository::new();
         mock_repo
             .expect_get_status()
@@ -750,6 +839,67 @@ mod tests {
 
         // Assert
         assert_eq!(result.unwrap(), Some(expected_time));
+    }
+
+    #[tokio::test]
+    async fn test_get_status_uses_short_lived_cache_hit() {
+        let user_id = Uuid::new_v4();
+        let content_type = content_type("post");
+        let content_id = Uuid::new_v4();
+        let expected_time = Utc.with_ymd_and_hms(2026, 2, 2, 17, 0, 0).unwrap();
+
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_get_like_status()
+            .with(eq(user_id), eq(content_type.clone()), eq(content_id))
+            .times(1)
+            .returning(move |_, _, _| Ok(Some(CachedLikeStatus::Liked(expected_time))));
+
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo.expect_get_status().times(0);
+
+        let service = LikeService::new(
+            CacheConfig::default(),
+            Arc::new(mock_repo),
+            Arc::new(mock_cache),
+            Arc::new(MockContentValidationClient::new()),
+            Arc::new(Broadcaster::new(16)),
+            test_metrics(),
+        );
+
+        let result = service.get_status(user_id, content_type, content_id).await;
+
+        assert_eq!(result.unwrap(), Some(expected_time));
+    }
+
+    #[tokio::test]
+    async fn test_get_status_uses_short_lived_cache_for_unliked_state() {
+        let user_id = Uuid::new_v4();
+        let content_type = content_type("post");
+        let content_id = Uuid::new_v4();
+
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_get_like_status()
+            .with(eq(user_id), eq(content_type.clone()), eq(content_id))
+            .times(1)
+            .returning(|_, _, _| Ok(Some(CachedLikeStatus::Unliked)));
+
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo.expect_get_status().times(0);
+
+        let service = LikeService::new(
+            CacheConfig::default(),
+            Arc::new(mock_repo),
+            Arc::new(mock_cache),
+            Arc::new(MockContentValidationClient::new()),
+            Arc::new(Broadcaster::new(16)),
+            test_metrics(),
+        );
+
+        let result = service.get_status(user_id, content_type, content_id).await;
+
+        assert_eq!(result.unwrap(), None);
     }
 
     // TODO: add pagination tests
@@ -1087,6 +1237,17 @@ mod tests {
             .times(1)
             .returning(|_, _, _| Ok(()));
         mock_cache
+            .expect_set_like_status()
+            .with(
+                eq(user_id),
+                eq(ct.clone()),
+                eq(content_id),
+                eq(CachedLikeStatus::Liked(timestamp)),
+                eq(config.user_status_ttl_secs),
+            )
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(()));
+        mock_cache
             .expect_set_count()
             .with(eq(ct.clone()), eq(content_id), eq(42), eq(config.like_counts_ttl_secs))
             .times(1)
@@ -1131,6 +1292,17 @@ mod tests {
         let mut mock_cache = MockCacheRepository::new();
         mock_cache.expect_get_content_exists().times(1).returning(|_, _| Ok(Some(true)));
         mock_cache.expect_set_content_exists().times(0);
+        mock_cache
+            .expect_set_like_status()
+            .with(
+                eq(user_id),
+                eq(ct.clone()),
+                eq(content_id),
+                eq(CachedLikeStatus::Liked(timestamp)),
+                eq(config.user_status_ttl_secs),
+            )
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(()));
         mock_cache
             .expect_set_count()
             .with(eq(ct.clone()), eq(content_id), eq(42), eq(config.like_counts_ttl_secs))

@@ -463,13 +463,16 @@ mod tests {
 
     use crate::{
         clients::{content::MockContentValidationClient, profile::ProfileClient},
-        config::{AppConfig, ContentTypeRegistry},
+        config::{AppConfig, CacheConfig, ContentTypeRegistry},
         domain::{ContentType, LikeRecord},
         http::{
             AppState,
             observability::{AppMetrics, StaticReadinessProbe},
         },
-        repository::{cache_repo::MockCacheRepository, like_repo::MockLikeRepository},
+        repository::{
+            cache_repo::{CachedLikeStatus, MockCacheRepository},
+            like_repo::MockLikeRepository,
+        },
         service::{broadcast::Broadcaster, like_service::LikeService},
     };
 
@@ -549,6 +552,7 @@ mod tests {
         let timestamp = Utc::now();
         let content_type = content_type("post");
         let like_count = 42;
+        let status_ttl = CacheConfig::default().user_status_ttl_secs;
 
         // Simulate a new like with count 42
         let mut mock_repo = MockLikeRepository::new();
@@ -560,6 +564,17 @@ mod tests {
         let mut mock_cache = MockCacheRepository::new();
         // Cache repo should call get_content_exists to check if content exists before liking
         mock_cache.expect_get_content_exists().times(1).returning(|_, _| Ok(Some(true)));
+        mock_cache
+            .expect_set_like_status()
+            .with(
+                eq(test_user_id),
+                eq(content_type.clone()),
+                eq(content_id),
+                eq(CachedLikeStatus::Liked(timestamp)),
+                eq(status_ttl),
+            )
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(()));
         // Cache repo should call set_count with the new count
         mock_cache
             .expect_set_count()
@@ -633,6 +648,7 @@ mod tests {
         let content_id = Uuid::new_v4();
         let content_type = content_type("post");
         let like_count_after = 41;
+        let status_ttl = CacheConfig::default().user_status_ttl_secs;
 
         // Simulate a content item that was previously liked and now has 41 likes after unliking
         let mut mock_repo = MockLikeRepository::new();
@@ -643,6 +659,17 @@ mod tests {
 
         // Cache repo should call set_count with the new count after unlike
         let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_set_like_status()
+            .with(
+                eq(test_user_id),
+                eq(content_type.clone()),
+                eq(content_id),
+                eq(CachedLikeStatus::Unliked),
+                eq(status_ttl),
+            )
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(()));
         mock_cache
             .expect_set_count()
             .with(
@@ -730,11 +757,14 @@ mod tests {
         let content_id = Uuid::new_v4();
         let timestamp = Utc::now();
 
-        // Simulate a content item that the user has liked with a specific timestamp
         let mut mock_repo = MockLikeRepository::new();
-        mock_repo.expect_get_status().times(1).returning(move |_, _, _| Ok(Some(timestamp)));
+        mock_repo.expect_get_status().times(0);
 
-        let mock_cache = MockCacheRepository::new();
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_get_like_status()
+            .times(1)
+            .returning(move |_, _, _| Ok(Some(CachedLikeStatus::Liked(timestamp))));
 
         let app = app_for_test(mock_repo, mock_cache, test_user_id);
 

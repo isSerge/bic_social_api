@@ -762,7 +762,9 @@ mod tests {
         let mut mock_repo = MockLikeRepository::new();
         mock_repo.expect_batch_get_counts().times(1).returning(|_| Ok(vec![10, 20]));
 
-        let mock_cache = MockCacheRepository::new();
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache.expect_batch_get_counts().times(1).returning(|_| Ok(vec![None, None]));
+        mock_cache.expect_set_batch_counts().times(1).returning(|_, _| Ok(()));
 
         let app = app_for_test(mock_repo, mock_cache, test_user_id);
 

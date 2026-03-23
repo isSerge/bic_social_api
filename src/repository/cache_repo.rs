@@ -21,6 +21,12 @@ pub trait CacheRepository: Send + Sync {
         content_id: Uuid,
     ) -> Result<Option<i64>, RepoError>;
 
+    /// Gets the current like counts for multiple content items. Returns None for individual cache misses.
+    async fn batch_get_counts(
+        &self,
+        items: &[(ContentType, Uuid)],
+    ) -> Result<Vec<Option<i64>>, RepoError>;
+
     /// Sets the like count for a specific content item in the cache with a TTL.
     /// The TTL is used to ensure that cached counts are refreshed periodically from db.
     async fn set_count(
@@ -28,6 +34,13 @@ pub trait CacheRepository: Send + Sync {
         content_type: ContentType,
         content_id: Uuid,
         count: i64,
+        ttl_secs: u64,
+    ) -> Result<(), RepoError>;
+
+    /// Sets multiple like counts in the cache with the same TTL.
+    async fn set_batch_counts(
+        &self,
+        items: &[(ContentType, Uuid, i64)],
         ttl_secs: u64,
     ) -> Result<(), RepoError>;
 
@@ -188,6 +201,45 @@ impl CacheRepository for RedisCacheRepository {
         }
     }
 
+    async fn batch_get_counts(
+        &self,
+        items: &[(ContentType, Uuid)],
+    ) -> Result<Vec<Option<i64>>, RepoError> {
+        // If the input list is empty, return early with an empty result without querying Redis
+        if items.is_empty() {
+            self.observe_cache_result("batch_get_counts", "miss");
+            return Ok(Vec::new());
+        }
+
+        // Return Ok(vec![None; items.len()]) to indicate cache miss if cannot connect
+        let Some(mut conn) = self.get_connection().await else {
+            self.observe_cache_result("batch_get_counts", "error");
+            return Ok(vec![None; items.len()]);
+        };
+
+        // Generate the list of keys for MGET based on the content type and ID pairs
+        let keys: Vec<String> = items
+            .iter()
+            .map(|(content_type, content_id)| Self::count_key(content_type.clone(), *content_id))
+            .collect();
+
+        let result: Result<Vec<Option<i64>>, _> =
+            deadpool_redis::redis::cmd("MGET").arg(&keys).query_async(&mut conn).await;
+
+        match result {
+            Ok(counts) => {
+                let metric_result = if counts.iter().any(Option::is_some) { "hit" } else { "miss" };
+                self.observe_cache_result("batch_get_counts", metric_result);
+                Ok(counts)
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, keys = ?keys, "Redis MGET for count batch failed");
+                self.observe_cache_result("batch_get_counts", "error");
+                Ok(vec![None; items.len()])
+            }
+        }
+    }
+
     async fn set_count(
         &self,
         content_type: ContentType,
@@ -208,6 +260,43 @@ impl CacheRepository for RedisCacheRepository {
             self.observe_cache_result("set_count", "error");
         } else {
             self.observe_cache_result("set_count", "hit");
+        }
+
+        Ok(())
+    }
+
+    async fn set_batch_counts(
+        &self,
+        items: &[(ContentType, Uuid, i64)],
+        ttl_secs: u64,
+    ) -> Result<(), RepoError> {
+        // If the input list is empty, return early without querying Redis
+        if items.is_empty() {
+            self.observe_cache_result("set_batch_counts", "hit");
+            return Ok(());
+        }
+
+        // Return Ok(()) to indicate cache miss if cannot connect
+        let Some(mut conn) = self.get_connection().await else {
+            self.observe_cache_result("set_batch_counts", "error");
+            return Ok(());
+        };
+
+        // Use a Redis pipeline to set multiple counts atomically and efficiently. Each count is set with the same TTL.
+        let mut pipe = deadpool_redis::redis::pipe();
+        pipe.atomic();
+
+        for (content_type, content_id, count) in items {
+            let key = Self::count_key(content_type.clone(), *content_id);
+            pipe.cmd("SET").arg(&key).arg(*count).arg("EX").arg(ttl_secs).ignore();
+        }
+
+        // Execute the pipeline and log the result.
+        if let Err(error) = pipe.query_async::<()>(&mut conn).await {
+            tracing::warn!(error = %error, item_count = items.len(), "Redis pipeline for count batch failed");
+            self.observe_cache_result("set_batch_counts", "error");
+        } else {
+            self.observe_cache_result("set_batch_counts", "hit");
         }
 
         Ok(())
@@ -581,6 +670,33 @@ mod tests {
 
         // This should NOT return a RepoError. It should return Ok(()) because the DB write already succeeded anyway.
         let result = cache.set_count(content_type("post"), Uuid::new_v4(), 42, 300).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_batch_get_counts_degrades_gracefully_when_redis_is_down() {
+        let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
+        let items = vec![
+            (content_type("post"), Uuid::new_v4()),
+            (content_type("bonus_hunter"), Uuid::new_v4()),
+        ];
+
+        let result = cache.batch_get_counts(&items).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![None, None]);
+    }
+
+    #[tokio::test]
+    async fn test_set_batch_counts_degrades_gracefully_when_redis_is_down() {
+        let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
+        let items = vec![
+            (content_type("post"), Uuid::new_v4(), 42),
+            (content_type("bonus_hunter"), Uuid::new_v4(), 7),
+        ];
+
+        let result = cache.set_batch_counts(&items, 300).await;
 
         assert!(result.is_ok());
     }

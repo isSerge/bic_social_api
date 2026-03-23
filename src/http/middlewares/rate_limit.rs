@@ -58,6 +58,7 @@ pub async fn rate_limiter(
     Ok(response)
 }
 
+/// Helper function to apply rate limit headers to the response based on the current rate limit status. This includes the total limit, remaining requests, and reset time for the client to know when they can make their next request without being rate limited.
 fn apply_rate_limit_headers(response: &mut Response, limit: u32, rate_limit: RateLimitStatus) {
     let remaining = limit.saturating_sub(rate_limit.current_count);
     let reset_at = SystemTime::now()

@@ -261,12 +261,52 @@ impl LikeService {
         &self,
         items: &[(ContentType, Uuid)],
     ) -> Result<Vec<i64>, DomainError> {
-        let counts = self.repo.batch_get_counts(items).await?;
+        // Short-circuit for empty input to avoid unnecessary cache/DB calls
+        if items.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Try cache first
+        let cached_counts = self.cache.batch_get_counts(items).await?;
+        let mut counts = Vec::with_capacity(items.len());
+        let mut missing_items = Vec::new();
+        let mut missing_indexes = Vec::new();
+
+        for (index, item) in items.iter().enumerate() {
+            match cached_counts.get(index).copied().flatten() {
+                Some(count) => counts.push(count),
+                None => {
+                    counts.push(0);
+                    missing_indexes.push(index);
+                    missing_items.push(item.clone());
+                }
+            }
+        }
+
+        // If there are any cache misses, fetch the counts from the database and update the cache in batch.
+        if !missing_items.is_empty() {
+            let fresh_counts = self.repo.batch_get_counts(&missing_items).await?;
+            let cache_updates: Vec<(ContentType, Uuid, i64)> = missing_items
+                .iter()
+                .cloned()
+                .zip(fresh_counts.iter().copied())
+                .map(|((content_type, content_id), count)| (content_type, content_id, count))
+                .collect();
+
+            for (missing_index, fresh_count) in missing_indexes.into_iter().zip(fresh_counts) {
+                counts[missing_index] = fresh_count;
+            }
+
+            // Update the cache with the fresh counts
+            let _ =
+                self.cache.set_batch_counts(&cache_updates, self.config.like_counts_ttl_secs).await;
+        }
 
         Ok(counts)
     }
 
     /// Batch retrieves like statuses for multiple content items for the authenticated user.
+    /// Intentionally bypasses cache for now because these results are user-scoped
     pub async fn batch_get_statuses(
         &self,
         user_id: Uuid,
@@ -717,22 +757,34 @@ mod tests {
     #[tokio::test]
     async fn test_batch_get_counts() {
         // Arrange
+        let config = CacheConfig::default();
         let ct1 = content_type("post");
         let ct2 = content_type("bonus_hunter");
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
-        let mock_cache = MockCacheRepository::new();
         let items = vec![(ct1.clone(), id1), (ct2.clone(), id2)];
 
         let mut mock_repo = MockLikeRepository::new();
         mock_repo
             .expect_batch_get_counts()
+            .with(eq(vec![(ct2.clone(), id2)]))
+            .times(1)
+            .returning(|_| Ok(vec![200]));
+
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_batch_get_counts()
             .with(eq(items.clone()))
             .times(1)
-            .returning(|_| Ok(vec![100, 200]));
+            .returning(|_| Ok(vec![Some(100), None]));
+        mock_cache
+            .expect_set_batch_counts()
+            .with(eq(vec![(ct2.clone(), id2, 200)]), eq(config.like_counts_ttl_secs))
+            .times(1)
+            .returning(|_, _| Ok(()));
 
         let service = LikeService::new(
-            CacheConfig::default(),
+            config,
             Arc::new(mock_repo),
             Arc::new(mock_cache),
             Arc::new(MockContentValidationClient::new()),
@@ -746,6 +798,40 @@ mod tests {
         // Assert
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), vec![100, 200]);
+    }
+
+    #[tokio::test]
+    async fn test_batch_get_counts_uses_cache_when_all_items_are_present() {
+        let ct1 = content_type("post");
+        let ct2 = content_type("bonus_hunter");
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let items = vec![(ct1, id1), (ct2, id2)];
+
+        let mut mock_repo = MockLikeRepository::new();
+        mock_repo.expect_batch_get_counts().times(0);
+
+        let mut mock_cache = MockCacheRepository::new();
+        mock_cache
+            .expect_batch_get_counts()
+            .with(eq(items.clone()))
+            .times(1)
+            .returning(|_| Ok(vec![Some(10), Some(20)]));
+        mock_cache.expect_set_batch_counts().times(0);
+
+        let service = LikeService::new(
+            CacheConfig::default(),
+            Arc::new(mock_repo),
+            Arc::new(mock_cache),
+            Arc::new(MockContentValidationClient::new()),
+            Arc::new(Broadcaster::new(16)),
+            test_metrics(),
+        );
+
+        let result = service.batch_get_counts(&items).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![10, 20]);
     }
 
     #[tokio::test]

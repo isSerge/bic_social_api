@@ -1,10 +1,9 @@
 use axum::{
-    Router,
-    middleware::{self},
-    routing::{delete, get, post},
+    Router, extract::Request, middleware::{self}, routing::{delete, get, post}
 };
 use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
+use tracing::Level;
 
 use super::{AppState, handlers, middlewares};
 
@@ -41,8 +40,22 @@ pub fn create_router(state: AppState) -> Router {
         .route("/metrics", get(handlers::metrics::metrics));
 
     Router::new().merge(protected).merge(public).merge(diagnostic).with_state(state).layer(
-        ServiceBuilder::new()
-            .layer(middleware::from_fn(middlewares::request_id))
-            .layer(TraceLayer::new_for_http()),
+        ServiceBuilder::new().layer(middleware::from_fn(middlewares::request_id)).layer(
+            TraceLayer::new_for_http().make_span_with(|request: &Request| {
+                let request_id = request
+                    .extensions()
+                    .get::<middlewares::RequestId>()
+                    .map(|request_id| request_id.as_str())
+                    .unwrap_or("missing");
+
+                tracing::span!(
+                    Level::INFO,
+                    "http_request",
+                    method = %request.method(),
+                    uri = %request.uri(),
+                    request_id = %request_id,
+                )
+            }),
+        ),
     )
 }

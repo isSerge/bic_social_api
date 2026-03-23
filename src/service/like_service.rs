@@ -46,16 +46,15 @@ impl LikeService {
         );
 
         if !content_exists_in_cache {
-            self.content_client
-                .validate_content(content_type.0.as_ref(), content_id)
-                .await
-                .map_err(|error| match error {
+            self.content_client.validate_content(content_type.clone(), content_id).await.map_err(
+                |error| match error {
                     ClientError::NotFound => DomainError::ContentNotFound {
                         content_type: content_type.0.to_string(),
                         content_id,
                     },
                     other => DomainError::Client(other),
-                })?;
+                },
+            )?;
 
             let _ = self
                 .cache
@@ -861,7 +860,7 @@ mod tests {
         let mut mock_content_client = MockContentValidationClient::new();
         mock_content_client
             .expect_validate_content()
-            .with(eq("post"), eq(content_id))
+            .with(eq(ct.clone()), eq(content_id))
             .times(1)
             .returning(|_, _| Ok(()));
 

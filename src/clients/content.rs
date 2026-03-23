@@ -1,14 +1,20 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use uuid::Uuid;
 
 use super::circuit_breaker::CircuitBreaker;
-use crate::{clients::error::ClientError, config::CircuitBreakerConfig};
+use crate::{
+    clients::error::ClientError,
+    config::{CircuitBreakerConfig, ContentTypeRegistry},
+    domain::ContentType,
+};
 
 /// Client for interacting with the Content API, specifically for content existence validation.
 pub struct HttpContentClient {
     http_client: reqwest::Client,
-    base_url: String,
+    registry: Arc<ContentTypeRegistry>,
     breaker: CircuitBreaker,
 }
 
@@ -20,7 +26,7 @@ pub trait ContentValidationClient: Send + Sync {
     /// Returns Ok(()) if the content exists, ClientError::NotFound if it doesn't, and other ClientErrors for different failure scenarios.
     async fn validate_content(
         &self,
-        content_type: &str,
+        content_type: ContentType,
         content_id: Uuid,
     ) -> Result<(), ClientError>;
 }
@@ -28,12 +34,12 @@ pub trait ContentValidationClient: Send + Sync {
 impl HttpContentClient {
     pub fn new(
         http_client: reqwest::Client,
-        base_url: impl Into<String>,
+        registry: Arc<ContentTypeRegistry>,
         config: CircuitBreakerConfig,
     ) -> Self {
         HttpContentClient {
             http_client,
-            base_url: base_url.into(),
+            registry,
             breaker: CircuitBreaker::new("Content API", config),
         }
     }
@@ -41,11 +47,12 @@ impl HttpContentClient {
     /// HTTP request logic, separated so the breaker can wrap it
     async fn execute_request(
         &self,
-        content_type: &str,
+        content_type: &ContentType,
         content_id: Uuid,
     ) -> Result<(), ClientError> {
+        let base_url = self.registry.get_url(content_type);
         let url =
-            format!("{}/v1/{}/{}", self.base_url.trim_end_matches('/'), content_type, content_id);
+            format!("{}/v1/{}/{}", base_url.trim_end_matches('/'), content_type.0, content_id);
 
         let response = self.http_client.get(&url).send().await.map_err(ClientError::Http)?;
 
@@ -61,7 +68,7 @@ impl HttpContentClient {
 impl ContentValidationClient for HttpContentClient {
     async fn validate_content(
         &self,
-        content_type: &str,
+        content_type: ContentType,
         content_id: Uuid,
     ) -> Result<(), ClientError> {
         // Check if the circuit breaker allows the call
@@ -71,7 +78,7 @@ impl ContentValidationClient for HttpContentClient {
         }
 
         // Execute the HTTP request
-        let result = self.execute_request(content_type, content_id).await;
+        let result = self.execute_request(&content_type, content_id).await;
 
         // Update the circuit breaker state based on the result
         match &result {
@@ -99,10 +106,26 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    // TODO: re-use
+    fn content_type(raw: &str) -> ContentType {
+        ContentType(Arc::from(raw.to_string()))
+    }
+
+    /// Helper to create a registry that points to our mock server for testing
+    fn registry_for_mock_server(
+        mock_server: &MockServer,
+        content_types: impl IntoIterator<Item = &'static str>,
+    ) -> Arc<ContentTypeRegistry> {
+        Arc::new(ContentTypeRegistry::from_base_urls(
+            content_types.into_iter().map(|content_type| (content_type, mock_server.uri())),
+        ))
+    }
+
     #[tokio::test]
     async fn validate_content_success() {
         let mock_server = MockServer::start().await;
         let content_id = Uuid::new_v4();
+        let content_type = content_type("post");
 
         Mock::given(method("GET"))
             .and(path(format!("/v1/post/{}", content_id)))
@@ -114,12 +137,14 @@ mod tests {
             .mount(&mock_server)
             .await;
 
+        let registry = registry_for_mock_server(&mock_server, ["post"]);
+
         let client = HttpContentClient::new(
             reqwest::Client::new(),
-            mock_server.uri(),
+            registry,
             CircuitBreakerConfig::default(),
         );
-        let result = client.validate_content("post", content_id).await;
+        let result = client.validate_content(content_type, content_id).await;
 
         assert!(result.is_ok());
     }
@@ -135,12 +160,14 @@ mod tests {
             .mount(&mock_server)
             .await;
 
+        let registry = registry_for_mock_server(&mock_server, ["post"]);
         let client = HttpContentClient::new(
             reqwest::Client::new(),
-            mock_server.uri(),
+            registry,
             CircuitBreakerConfig::default(),
         );
-        let result = client.validate_content("post", content_id).await;
+        let content_type = content_type("post");
+        let result = client.validate_content(content_type, content_id).await;
 
         assert!(matches!(result.unwrap_err(), ClientError::NotFound));
     }
@@ -156,12 +183,14 @@ mod tests {
             .mount(&mock_server)
             .await;
 
+        let registry = registry_for_mock_server(&mock_server, ["post"]);
         let client = HttpContentClient::new(
             reqwest::Client::new(),
-            mock_server.uri(),
+            registry,
             CircuitBreakerConfig::default(),
         );
-        let result = client.validate_content("post", content_id).await;
+        let content_type = content_type("post");
+        let result = client.validate_content(content_type, content_id).await;
 
         assert!(matches!(result.unwrap_err(), ClientError::DependencyUnavailable(_)));
     }
@@ -177,12 +206,14 @@ mod tests {
             .mount(&mock_server)
             .await;
 
+        let registry = registry_for_mock_server(&mock_server, ["invalid_type"]);
         let client = HttpContentClient::new(
             reqwest::Client::new(),
-            mock_server.uri(),
+            registry,
             CircuitBreakerConfig::default(),
         );
-        let result = client.validate_content("invalid_type", content_id).await;
+        let content_type = content_type("invalid_type");
+        let result = client.validate_content(content_type, content_id).await;
 
         assert!(matches!(result.unwrap_err(), ClientError::NotFound));
     }
@@ -205,19 +236,21 @@ mod tests {
             success_threshold: 1,
         };
 
-        let client = HttpContentClient::new(reqwest::Client::new(), mock_server.uri(), config);
+        let registry = registry_for_mock_server(&mock_server, ["post"]);
+        let client = HttpContentClient::new(reqwest::Client::new(), registry, config);
 
         // Call 1: Fails, but circuit remains Closed
-        let result1 = client.validate_content("post", content_id).await;
+        let content_type = content_type("post");
+        let result1 = client.validate_content(content_type.clone(), content_id).await;
         assert!(matches!(result1.unwrap_err(), ClientError::DependencyUnavailable(_)));
 
         // Call 2: Fails, threshold reached! Circuit trips to Open
-        let result2 = client.validate_content("post", content_id).await;
+        let result2 = client.validate_content(content_type.clone(), content_id).await;
         assert!(matches!(result2.unwrap_err(), ClientError::DependencyUnavailable(_)));
 
         // Call 3: Fails FAST without hitting the network
         // We know it didn't hit the network because wiremock would complain if it got a request
-        let result3 = client.validate_content("post", content_id).await;
+        let result3 = client.validate_content(content_type, content_id).await;
         assert!(matches!(result3.unwrap_err(), ClientError::DependencyUnavailable(_)));
     }
 
@@ -239,15 +272,17 @@ mod tests {
             success_threshold: 1,
         };
 
-        let client = HttpContentClient::new(reqwest::Client::new(), mock_server.uri(), config);
+        let registry = registry_for_mock_server(&mock_server, ["post"]);
+        let client = HttpContentClient::new(reqwest::Client::new(), registry, config);
 
         // Call 1: Returns 404. This is a business logic error, NOT a network failure.
-        let result1 = client.validate_content("post", content_id).await;
+        let content_type = content_type("post");
+        let result1 = client.validate_content(content_type.clone(), content_id).await;
         assert!(matches!(result1.unwrap_err(), ClientError::NotFound));
 
         // Call 2: If the circuit tripped, this would return DependencyUnavailable.
         // Because it returns NotFound again, we prove the circuit remained Closed!
-        let result2 = client.validate_content("post", content_id).await;
+        let result2 = client.validate_content(content_type, content_id).await;
         assert!(matches!(result2.unwrap_err(), ClientError::NotFound));
     }
 }

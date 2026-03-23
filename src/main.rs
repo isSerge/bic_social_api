@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(service = "social-api", "Starting Social API with configuration: {:?}", config);
 
     // Init content type registry
-    let content_type_registry = ContentTypeRegistry::from_env();
+    let content_type_registry = Arc::new(ContentTypeRegistry::from_env());
 
     // Initialize database connection pools and run migrations
     let (writer_pool, reader_pool) = repository::setup_database_pools(&config)
@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http_client = reqwest::Client::new();
     let content_client = Arc::new(HttpContentClient::new(
         http_client.clone(),
-        config.clients.content_url.clone(),
+        Arc::clone(&content_type_registry),
         config.circuit_breaker,
     ));
 
@@ -100,7 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create shared application state
     let state = AppState {
         config: Arc::clone(&config),
-        content_type_registry: Arc::new(content_type_registry),
+        content_type_registry,
         like_service: Arc::new(like_service),
         profile_client: Arc::new(profile_client),
         cache: cache_repo,

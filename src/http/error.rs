@@ -1,7 +1,6 @@
 use axum::response::{IntoResponse, Response};
 use reqwest::StatusCode;
 use thiserror::Error;
-use uuid::Uuid;
 
 use crate::clients::error::ClientError;
 use crate::config::ContentTypeRegistryError;
@@ -20,9 +19,6 @@ pub enum ApiError {
     #[error(transparent)]
     ContentTypeUnknown(#[from] ContentTypeRegistryError),
 
-    #[error("Content item {content_id} of type {content_type} does not exist")]
-    ContentNotFound { content_type: String, content_id: Uuid },
-
     /* --- Layer Compositions --- */
     #[error(transparent)]
     Domain(#[from] DomainError),
@@ -34,6 +30,7 @@ pub enum ApiError {
     Client(#[from] ClientError),
 }
 
+// TODO: add unit tests
 // Map the layered errors to the spec's exact JSON shape
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -45,9 +42,6 @@ impl IntoResponse for ApiError {
             }
             ApiError::ContentTypeUnknown(_) => {
                 (StatusCode::BAD_REQUEST, "CONTENT_TYPE_UNKNOWN", self.to_string())
-            }
-            ApiError::ContentNotFound { .. } => {
-                (StatusCode::NOT_FOUND, "CONTENT_NOT_FOUND", self.to_string())
             }
 
             // TODO: double check if these belong to domain

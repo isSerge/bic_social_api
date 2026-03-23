@@ -57,8 +57,6 @@ pub struct ServerConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct ClientsConfig {
-    #[serde(rename = "content_api_url")]
-    pub content_url: String,
     #[serde(rename = "profile_api_url")]
     pub profile_url: String,
 }
@@ -182,10 +180,7 @@ impl Default for AppConfig {
                 shutdown_timeout_secs: default_shutdown_timeout_secs(),
                 sse_channel_capacity: default_sse_channel_capacity(),
             },
-            clients: ClientsConfig {
-                content_url: "http://localhost:8081".to_string(),
-                profile_url: "http://localhost:8082".to_string(),
-            },
+            clients: ClientsConfig { profile_url: "http://localhost:8082".to_string() },
             cache: CacheConfig {
                 like_counts_ttl_secs: default_cache_ttl_like_counts_secs(),
                 content_validation_ttl_secs: default_cache_ttl_content_validation_secs(),

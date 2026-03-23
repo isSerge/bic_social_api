@@ -63,6 +63,22 @@ impl ContentTypeRegistry {
     pub fn get_all_content_types(&self) -> Vec<ContentType> {
         self.base_urls.keys().map(|k| ContentType(Arc::from(k.clone()))).collect()
     }
+
+    /// Helper for tests to create a registry from a list of content type to URL mappings, bypassing env vars
+    #[cfg(test)]
+    pub fn from_base_urls<I, K, V>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let base_urls = entries
+            .into_iter()
+            .map(|(content_type, url)| (content_type.into(), url.into()))
+            .collect();
+
+        Self { base_urls }
+    }
 }
 
 #[cfg(test)]

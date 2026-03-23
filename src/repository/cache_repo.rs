@@ -14,6 +14,19 @@ use uuid::Uuid;
 // Sentinel value used in the cache to represent an unliked status, since we want to distinguish between "not in cache" and "cached as unliked".
 const UNLIKED_STATUS_SENTINEL: &str = "0";
 
+/// Macro to acquire a Redis connection or return a default value if unavailable.
+macro_rules! acquire_conn_or_return {
+    ($self:expr, $operation:expr, $default_ret:expr) => {
+        match $self.get_connection().await {
+            Some(conn) => conn,
+            None => {
+                $self.metrics.observe_cache_operation($operation, CacheResultLabel::Error);
+                return Ok($default_ret);
+            }
+        }
+    };
+}
+
 /// Repository trait for caching like counts and other related data.
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
@@ -207,11 +220,7 @@ impl CacheRepository for RedisCacheRepository {
         content_id: Uuid,
     ) -> Result<Option<i64>, RepoError> {
         // Return Ok(None) to indicate cache miss if cannot connect
-        let Some(mut conn) = self.get_connection().await else {
-            self.metrics
-                .observe_cache_operation(CacheOperationLabel::GetCount, CacheResultLabel::Error);
-            return Ok(None);
-        };
+        let mut conn = acquire_conn_or_return!(self, CacheOperationLabel::GetCount, None);
 
         let key = Self::count_key(content_type, content_id);
 
@@ -251,13 +260,11 @@ impl CacheRepository for RedisCacheRepository {
         }
 
         // Return Ok(vec![None; items.len()]) to indicate cache miss if cannot connect
-        let Some(mut conn) = self.get_connection().await else {
-            self.metrics.observe_cache_operation(
-                CacheOperationLabel::BatchGetCounts,
-                CacheResultLabel::Error,
-            );
-            return Ok(vec![None; items.len()]);
-        };
+        let mut conn = acquire_conn_or_return!(
+            self,
+            CacheOperationLabel::BatchGetCounts,
+            vec![None; items.len()]
+        );
 
         // Generate the list of keys for MGET based on the content type and ID pairs
         let keys: Vec<String> = items
@@ -298,11 +305,7 @@ impl CacheRepository for RedisCacheRepository {
         ttl_secs: u64,
     ) -> Result<(), RepoError> {
         // Return Ok(()) to indicate cache miss if cannot connect
-        let Some(mut conn) = self.get_connection().await else {
-            self.metrics
-                .observe_cache_operation(CacheOperationLabel::SetCount, CacheResultLabel::Error);
-            return Ok(());
-        };
+        let mut conn = acquire_conn_or_return!(self, CacheOperationLabel::SetCount, ());
 
         let key = Self::count_key(content_type, content_id);
 
@@ -333,13 +336,7 @@ impl CacheRepository for RedisCacheRepository {
         }
 
         // Return Ok(()) to indicate cache miss if cannot connect
-        let Some(mut conn) = self.get_connection().await else {
-            self.metrics.observe_cache_operation(
-                CacheOperationLabel::SetBatchCounts,
-                CacheResultLabel::Error,
-            );
-            return Ok(());
-        };
+        let mut conn = acquire_conn_or_return!(self, CacheOperationLabel::SetBatchCounts, ());
 
         // Use a Redis pipeline to set multiple counts atomically and efficiently. Each count is set with the same TTL.
         let mut pipe = deadpool_redis::redis::pipe();
@@ -373,13 +370,7 @@ impl CacheRepository for RedisCacheRepository {
         content_type: ContentType,
         content_id: Uuid,
     ) -> Result<Option<CachedLikeStatus>, RepoError> {
-        let Some(mut conn) = self.get_connection().await else {
-            self.metrics.observe_cache_operation(
-                CacheOperationLabel::GetLikeStatus,
-                CacheResultLabel::Error,
-            );
-            return Ok(None);
-        };
+        let mut conn = acquire_conn_or_return!(self, CacheOperationLabel::GetLikeStatus, None);
 
         let key = Self::like_status_key(user_id, content_type, content_id);
 
@@ -438,13 +429,7 @@ impl CacheRepository for RedisCacheRepository {
         status: CachedLikeStatus,
         ttl_secs: u64,
     ) -> Result<(), RepoError> {
-        let Some(mut conn) = self.get_connection().await else {
-            self.metrics.observe_cache_operation(
-                CacheOperationLabel::SetLikeStatus,
-                CacheResultLabel::Error,
-            );
-            return Ok(());
-        };
+        let mut conn = acquire_conn_or_return!(self, CacheOperationLabel::SetLikeStatus, ());
 
         let key = Self::like_status_key(user_id, content_type, content_id);
         let value = match status {
@@ -469,11 +454,7 @@ impl CacheRepository for RedisCacheRepository {
 
     async fn get_token(&self, token: &str) -> Result<Option<Uuid>, RepoError> {
         // Return Ok(None) to indicate cache miss if cannot connect
-        let Some(mut conn) = self.get_connection().await else {
-            self.metrics
-                .observe_cache_operation(CacheOperationLabel::GetToken, CacheResultLabel::Error);
-            return Ok(None);
-        };
+        let mut conn = acquire_conn_or_return!(self, CacheOperationLabel::GetToken, None);
 
         let key = Self::token_key(token);
 
@@ -505,11 +486,7 @@ impl CacheRepository for RedisCacheRepository {
 
     async fn set_token(&self, token: &str, user_id: Uuid, ttl_secs: u64) -> Result<(), RepoError> {
         // Return Ok(()) to indicate cache miss if cannot connect
-        let Some(mut conn) = self.get_connection().await else {
-            self.metrics
-                .observe_cache_operation(CacheOperationLabel::SetToken, CacheResultLabel::Error);
-            return Ok(());
-        };
+        let mut conn = acquire_conn_or_return!(self, CacheOperationLabel::SetToken, ());
 
         let key = Self::token_key(token);
 
@@ -531,13 +508,7 @@ impl CacheRepository for RedisCacheRepository {
         content_id: Uuid,
     ) -> Result<Option<bool>, RepoError> {
         // Return Ok(None) to indicate cache miss if cannot connect
-        let Some(mut conn) = self.get_connection().await else {
-            self.metrics.observe_cache_operation(
-                CacheOperationLabel::GetContentExists,
-                CacheResultLabel::Error,
-            );
-            return Ok(None);
-        };
+        let mut conn = acquire_conn_or_return!(self, CacheOperationLabel::GetContentExists, None);
 
         let key = Self::content_exists_key(content_type, content_id);
 
@@ -574,13 +545,7 @@ impl CacheRepository for RedisCacheRepository {
         ttl_secs: u64,
     ) -> Result<(), RepoError> {
         // Return Ok(()) to indicate cache miss if cannot connect
-        let Some(mut conn) = self.get_connection().await else {
-            self.metrics.observe_cache_operation(
-                CacheOperationLabel::SetContentExists,
-                CacheResultLabel::Error,
-            );
-            return Ok(());
-        };
+        let mut conn = acquire_conn_or_return!(self, CacheOperationLabel::SetContentExists, ());
 
         let key = Self::content_exists_key(content_type, content_id);
 
@@ -607,13 +572,11 @@ impl CacheRepository for RedisCacheRepository {
         window_secs: u64,
     ) -> Result<RateLimitStatus, RepoError> {
         // Return an allowed status if Redis is unavailable to allow the request (fail open)
-        let Some(mut conn) = self.get_connection().await else {
-            self.metrics.observe_cache_operation(
-                CacheOperationLabel::CheckRateLimit,
-                CacheResultLabel::Error,
-            );
-            return Ok(RateLimitStatus { allowed: true, current_count: 0, retry_after_secs: 0 });
-        };
+        let mut conn = acquire_conn_or_return!(
+            self,
+            CacheOperationLabel::CheckRateLimit,
+            RateLimitStatus { allowed: true, current_count: 0, retry_after_secs: 0 }
+        );
 
         // Use Redis script for atomicity
         let script = Script::new(
@@ -662,13 +625,8 @@ impl CacheRepository for RedisCacheRepository {
         content_id: Uuid,
         ttl_secs: u64,
     ) -> Result<bool, RepoError> {
-        let Some(mut conn) = self.get_connection().await else {
-            self.metrics.observe_cache_operation(
-                CacheOperationLabel::TryAcquireCountLock,
-                CacheResultLabel::Error,
-            );
-            return Ok(false);
-        };
+        let mut conn =
+            acquire_conn_or_return!(self, CacheOperationLabel::TryAcquireCountLock, false);
 
         let key = Self::count_lock_key(content_type, content_id);
         let result: Result<Option<String>, _> = deadpool_redis::redis::cmd("SET")
@@ -711,13 +669,7 @@ impl CacheRepository for RedisCacheRepository {
         content_type: ContentType,
         content_id: Uuid,
     ) -> Result<(), RepoError> {
-        let Some(mut conn) = self.get_connection().await else {
-            self.metrics.observe_cache_operation(
-                CacheOperationLabel::ReleaseCountLock,
-                CacheResultLabel::Error,
-            );
-            return Ok(());
-        };
+        let mut conn = acquire_conn_or_return!(self, CacheOperationLabel::ReleaseCountLock, ());
 
         let key = Self::count_lock_key(content_type, content_id);
         if let Err(error) = conn.del::<_, ()>(&key).await {
@@ -743,13 +695,7 @@ impl CacheRepository for RedisCacheRepository {
         items: Vec<(ContentType, Uuid, i64)>,
     ) -> Result<(), RepoError> {
         // Return Ok(()) to indicate cache miss if cannot connect
-        let Some(mut conn) = self.get_connection().await else {
-            self.metrics.observe_cache_operation(
-                CacheOperationLabel::SetLeaderboard,
-                CacheResultLabel::Error,
-            );
-            return Ok(());
-        };
+        let mut conn = acquire_conn_or_return!(self, CacheOperationLabel::SetLeaderboard, ());
 
         let key = Self::leaderboard_key(content_type, window_name);
 
@@ -802,13 +748,7 @@ impl CacheRepository for RedisCacheRepository {
         }
 
         // Return Ok(None) to indicate cache miss if cannot connect
-        let Some(mut conn) = self.get_connection().await else {
-            self.metrics.observe_cache_operation(
-                CacheOperationLabel::GetLeaderboard,
-                CacheResultLabel::Error,
-            );
-            return Ok(vec![]);
-        };
+        let mut conn = acquire_conn_or_return!(self, CacheOperationLabel::GetLeaderboard, vec![]);
 
         let key = Self::leaderboard_key(content_type, window_name);
 

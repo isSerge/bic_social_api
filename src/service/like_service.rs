@@ -907,8 +907,6 @@ mod tests {
         assert_eq!(result.unwrap(), None);
     }
 
-    // TODO: add pagination tests
-
     #[tokio::test]
     async fn test_batch_get_counts() {
         // Arrange
@@ -987,6 +985,47 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), vec![10, 20]);
+    }
+
+    #[tokio::test]
+    async fn test_batch_get_counts_partial_cache_hit() {
+        let ct1 = content_type("post");
+        let id1 = Uuid::new_v4(); // Will be in cache
+        let id2 = Uuid::new_v4(); // Will be a cache MISS
+
+        let mut mock_cache = MockCacheRepository::new();
+        // Cache returns Some(10) for id1, and None for id2
+        mock_cache.expect_batch_get_counts().times(1).returning(move |_| Ok(vec![Some(10), None]));
+
+        let mut mock_repo = MockLikeRepository::new();
+        // DB should ONLY be queried for id2!
+        mock_repo
+            .expect_batch_get_counts()
+            .with(eq(vec![(ct1.clone(), id2)]))
+            .times(1)
+            .returning(|_| Ok(vec![20]));
+
+        // Mock setting the missing item back into the cache after fetching from the DB
+        mock_cache
+            .expect_set_batch_counts()
+            .with(eq(vec![(ct1.clone(), id2, 20)]), eq(CacheConfig::default().like_counts_ttl_secs))
+            .times(1)
+            .returning(|_, _| Ok(()));
+
+        // Act
+        let service = LikeService::new(
+            CacheConfig::default(),
+            Arc::new(mock_repo),
+            Arc::new(mock_cache),
+            Arc::new(MockContentValidationClient::new()),
+            Arc::new(Broadcaster::new(16)),
+            test_metrics(),
+        );
+        let results =
+            service.batch_get_counts(&[(ct1.clone(), id1), (ct1.clone(), id2)]).await.unwrap();
+
+        // Assert: Results are merged in correct order
+        assert_eq!(results, vec![10, 20]);
     }
 
     #[tokio::test]

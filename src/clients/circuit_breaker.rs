@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
 
@@ -43,9 +43,16 @@ impl CircuitBreaker {
         }
     }
 
+    fn lock_state(&self) -> MutexGuard<'_, CircuitBreakerState> {
+        self.state.lock().unwrap_or_else(|poisoned| {
+            tracing::error!(service = %self.name, "Circuit breaker state lock poisoned");
+            poisoned.into_inner()
+        })
+    }
+
     /// Checks if a call is permitted based on the current state and timing of the circuit breaker.
     pub fn is_call_permitted(&self) -> bool {
-        let mut lock = self.state.lock().unwrap();
+        let mut lock = self.lock_state();
 
         match lock.state {
             State::Closed => true,
@@ -70,7 +77,7 @@ impl CircuitBreaker {
 
     /// Updates the circuit breaker state on a successful call, potentially transitioning from HALF-OPEN to CLOSED.
     pub fn on_success(&self) {
-        let mut lock = self.state.lock().unwrap();
+        let mut lock = self.lock_state();
         let now = Instant::now();
 
         lock.recent_calls.push_back((now, true));
@@ -100,7 +107,7 @@ impl CircuitBreaker {
 
     /// Updates the circuit breaker state on a failed call, potentially transitioning to OPEN based on consecutive failures or failure rate.
     pub fn on_error(&self) {
-        let mut lock = self.state.lock().unwrap();
+        let mut lock = self.lock_state();
         let now = Instant::now();
 
         lock.recent_calls.push_back((now, false));

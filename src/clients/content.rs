@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use reqwest::StatusCode;
+use serde::Deserialize;
 use uuid::Uuid;
 
 use super::circuit_breaker::CircuitBreaker;
@@ -19,6 +20,12 @@ pub struct HttpContentClient {
     registry: Arc<ContentTypeRegistry>,
     breaker: CircuitBreaker,
     metrics: Arc<AppMetrics>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContentLookupResponse {
+    #[serde(default)]
+    items: Vec<serde_json::Value>,
 }
 
 /// Trait to allow mocking in tests and to abstract away the implementation details of the content validation logic.
@@ -76,7 +83,13 @@ impl HttpContentClient {
         );
 
         match response.status() {
-            StatusCode::OK => Ok(()),
+            StatusCode::OK => {
+                let payload: ContentLookupResponse =
+                    response.json().await.map_err(ClientError::Http)?;
+
+                // A post is valid if the response contains a non-empty items array
+                if payload.items.is_empty() { Err(ClientError::NotFound) } else { Ok(()) }
+            }
             StatusCode::NOT_FOUND => Err(ClientError::NotFound),
             _ => Err(ClientError::DependencyUnavailable("Content API".to_string())),
         }
@@ -154,9 +167,13 @@ mod tests {
         Mock::given(method("GET"))
             .and(path(format!("/v1/post/{}", content_id)))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id": content_id,
-                "content_type": "post",
-                "title": "Mock post content"
+                "items": [
+                    {
+                        "id": content_id,
+                        "content_type": "post",
+                        "title": "Mock post content"
+                    }
+                ]
             })))
             .mount(&mock_server)
             .await;
@@ -172,6 +189,33 @@ mod tests {
         let result = client.validate_content(content_type, content_id).await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn validate_content_empty_items_returns_not_found() {
+        let mock_server = MockServer::start().await;
+        let content_id = Uuid::new_v4();
+
+        Mock::given(method("GET"))
+            .and(path(format!("/v1/post/{}", content_id)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let registry = registry_for_mock_server(&mock_server, ["post"]);
+        let client = HttpContentClient::new(
+            reqwest::Client::new(),
+            registry,
+            CircuitBreakerConfig::default(),
+            test_metrics(),
+        );
+        let content_type = content_type("post");
+
+        let result = client.validate_content(content_type, content_id).await;
+
+        assert!(matches!(result.unwrap_err(), ClientError::NotFound));
     }
 
     #[tokio::test]

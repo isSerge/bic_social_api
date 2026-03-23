@@ -44,6 +44,60 @@ impl LikeService {
         Self { repo, cache, content_client, config, broadcaster, metrics }
     }
 
+    /// Helper function to apply side effects after like/unlike operations, such as updating caches, recording metrics, and broadcasting events. This centralizes the logic for these side effects to ensure consistency across like and unlike operations.
+    async fn apply_write_side_effects(
+        &self,
+        user_id: Uuid,
+        content_type: ContentType,
+        content_id: Uuid,
+        status: CachedLikeStatus,
+        count_update: Option<i64>,
+        metric: Option<LikeOperationLabel>,
+        event: Option<(LikeEventKind, i64, DateTime<Utc>)>,
+    ) {
+        // Best-effort cache update
+        let _ = self
+            .cache
+            .set_like_status(
+                user_id,
+                content_type.clone(),
+                content_id,
+                status,
+                self.config.user_status_ttl_secs,
+            )
+            .await;
+
+        // Only update the count cache if there was an actual change in like status
+        if let Some(count) = count_update {
+            let _ = self
+                .cache
+                .set_count(
+                    content_type.clone(),
+                    content_id,
+                    count,
+                    self.config.like_counts_ttl_secs,
+                )
+                .await;
+        }
+
+        // Record metrics for the like operation if applicable
+        if let Some(operation) = metric {
+            self.metrics.observe_like_operation(content_type.0.as_ref(), operation);
+        }
+
+        // Broadcast an event to SSE subscribers if applicable
+        if let Some((event_kind, count, timestamp)) = event {
+            self.broadcaster.broadcast(LikeEvent {
+                event: event_kind,
+                user_id,
+                content_type,
+                content_id,
+                count,
+                timestamp,
+            });
+        }
+    }
+
     /// Handles a like operation: validates the token, checks content existence, and records the like.
     /// Returns (is_new_like, updated_count, timestamp) on success.
     pub async fn like(
@@ -81,42 +135,16 @@ impl LikeService {
         let (already_existed, new_count, timestamp) =
             self.repo.insert_like(user_id, content_type.clone(), content_id).await?;
 
-        // Cache the like status with a short TTL to mask replication lag after writes.
-        let _ = self
-            .cache
-            .set_like_status(
-                user_id,
-                content_type.clone(),
-                content_id,
-                CachedLikeStatus::Liked(timestamp),
-                self.config.user_status_ttl_secs,
-            )
-            .await;
-
-        // Update cache if this was a new like
-        if !already_existed {
-            let _ = self
-                .cache
-                .set_count(
-                    content_type.clone(),
-                    content_id,
-                    new_count,
-                    self.config.like_counts_ttl_secs,
-                )
-                .await;
-
-            self.metrics.observe_like_operation(content_type.0.as_ref(), LikeOperationLabel::Like);
-        }
-
-        // Broadcast the like event to subscribers
-        self.broadcaster.broadcast(LikeEvent {
-            event: LikeEventKind::Like,
+        self.apply_write_side_effects(
             user_id,
             content_type,
             content_id,
-            count: new_count,
-            timestamp,
-        });
+            CachedLikeStatus::Liked(timestamp),
+            (!already_existed).then_some(new_count),
+            (!already_existed).then_some(LikeOperationLabel::Like),
+            Some((LikeEventKind::Like, new_count, timestamp)),
+        )
+        .await;
 
         Ok((already_existed, new_count, timestamp))
     }
@@ -132,43 +160,16 @@ impl LikeService {
         let (was_liked, new_count) =
             self.repo.delete_like(user_id, content_type.clone(), content_id).await?;
 
-        // Cache the unlike status with a short TTL to mask replication lag after writes.
-        let _ = self
-            .cache
-            .set_like_status(
-                user_id,
-                content_type.clone(),
-                content_id,
-                CachedLikeStatus::Unliked,
-                self.config.user_status_ttl_secs,
-            )
-            .await;
-
-        // Update cache if there was an actual like removed
-        if was_liked {
-            let _ = self
-                .cache
-                .set_count(
-                    content_type.clone(),
-                    content_id,
-                    new_count,
-                    self.config.like_counts_ttl_secs,
-                )
-                .await;
-
-            self.metrics
-                .observe_like_operation(content_type.0.as_ref(), LikeOperationLabel::Unlike);
-
-            // Broadcast the unlike event to subscribers
-            self.broadcaster.broadcast(LikeEvent {
-                event: LikeEventKind::Unlike,
-                user_id,
-                content_type,
-                content_id,
-                count: new_count,
-                timestamp: Utc::now(),
-            });
-        }
+        self.apply_write_side_effects(
+            user_id,
+            content_type,
+            content_id,
+            CachedLikeStatus::Unliked,
+            was_liked.then_some(new_count),
+            was_liked.then_some(LikeOperationLabel::Unlike),
+            was_liked.then_some((LikeEventKind::Unlike, new_count, Utc::now())),
+        )
+        .await;
 
         Ok((was_liked, new_count))
     }
@@ -248,7 +249,10 @@ impl LikeService {
     ) -> Result<i64, DomainError> {
         let count = self.repo.get_count(content_type.clone(), content_id).await?;
 
-        // Populate cache
+        // This blind cache write can lose a race against a concurrent like/unlike that already
+        // wrote a newer count into Redis after our DB read completed. 5-minute TTL is good enough for this social use case.
+        // If we need strict ordering later, this path should switch to a Lua compare/set style
+        // update that only fills the cache when the key is still absent.
         let _ = self
             .cache
             .set_count(content_type, content_id, count, self.config.like_counts_ttl_secs)

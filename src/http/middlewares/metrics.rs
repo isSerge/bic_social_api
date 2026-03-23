@@ -6,7 +6,7 @@ use axum::{
     response::Response,
 };
 
-use crate::http::AppState;
+use crate::http::{AppState, observability::HttpMethodLabel};
 
 /// Middleware to record HTTP metrics for each request, including method, path, status code, and duration. Uses the AppMetrics instance from state to record metrics in a Prometheus-compatible format.
 pub async fn record_http_metrics(
@@ -25,7 +25,7 @@ pub async fn record_http_metrics(
     let response = next.run(request).await;
 
     state.metrics.observe_http_request(
-        method.as_str(),
+        HttpMethodLabel::from(&method),
         &path,
         response.status().as_u16(),
         started_at,

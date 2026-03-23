@@ -1,8 +1,179 @@
+use std::borrow::Cow;
 use std::time::Instant;
 
 use prometheus::{
     Encoder, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Registry, TextEncoder,
 };
+
+/// Bounded HTTP method labels for metrics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HttpMethodLabel {
+    Get,
+    Post,
+    Put,
+    Patch,
+    Delete,
+    Head,
+    Options,
+    Other,
+}
+
+impl HttpMethodLabel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+            Self::Post => "POST",
+            Self::Put => "PUT",
+            Self::Patch => "PATCH",
+            Self::Delete => "DELETE",
+            Self::Head => "HEAD",
+            Self::Options => "OPTIONS",
+            Self::Other => "OTHER",
+        }
+    }
+}
+
+/// Converts an `axum::http::Method` to a `HttpMethodLabel`.
+impl From<&axum::http::Method> for HttpMethodLabel {
+    fn from(method: &axum::http::Method) -> Self {
+        match *method {
+            axum::http::Method::GET => Self::Get,
+            axum::http::Method::POST => Self::Post,
+            axum::http::Method::PUT => Self::Put,
+            axum::http::Method::PATCH => Self::Patch,
+            axum::http::Method::DELETE => Self::Delete,
+            axum::http::Method::HEAD => Self::Head,
+            axum::http::Method::OPTIONS => Self::Options,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// Bounded cache operation labels for metrics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CacheOperationLabel {
+    GetCount,
+    BatchGetCounts,
+    SetCount,
+    SetBatchCounts,
+    GetLikeStatus,
+    SetLikeStatus,
+    TryAcquireCountLock,
+    ReleaseCountLock,
+    GetToken,
+    SetToken,
+    GetContentExists,
+    SetContentExists,
+    CheckRateLimit,
+    SetLeaderboard,
+    GetLeaderboard,
+}
+
+impl CacheOperationLabel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::GetCount => "get_count",
+            Self::BatchGetCounts => "batch_get_counts",
+            Self::SetCount => "set_count",
+            Self::SetBatchCounts => "set_batch_counts",
+            Self::GetLikeStatus => "get_like_status",
+            Self::SetLikeStatus => "set_like_status",
+            Self::TryAcquireCountLock => "try_acquire_count_lock",
+            Self::ReleaseCountLock => "release_count_lock",
+            Self::GetToken => "get_token",
+            Self::SetToken => "set_token",
+            Self::GetContentExists => "get_content_exists",
+            Self::SetContentExists => "set_content_exists",
+            Self::CheckRateLimit => "check_rate_limit",
+            Self::SetLeaderboard => "set_leaderboard",
+            Self::GetLeaderboard => "get_leaderboard",
+        }
+    }
+}
+
+/// Bounded cache outcome labels for metrics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CacheResultLabel {
+    Hit,
+    Miss,
+    Error,
+}
+
+impl CacheResultLabel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Hit => "hit",
+            Self::Miss => "miss",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// Bounded external service labels for metrics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalServiceLabel {
+    ContentApi,
+    ProfileApi,
+}
+
+impl ExternalServiceLabel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ContentApi => "content_api",
+            Self::ProfileApi => "profile_api",
+        }
+    }
+}
+
+/// Bounded external call status labels for metrics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalCallStatusLabel {
+    Http(reqwest::StatusCode),
+    Error,
+}
+
+impl ExternalCallStatusLabel {
+    fn as_label(self) -> Cow<'static, str> {
+        match self {
+            Self::Http(status) => Cow::Owned(status.as_str().to_string()),
+            Self::Error => Cow::Borrowed("error"),
+        }
+    }
+}
+
+/// Bounded circuit breaker states for metrics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CircuitBreakerMetricState {
+    Closed,
+    HalfOpen,
+    Open,
+}
+
+impl CircuitBreakerMetricState {
+    fn gauge_value(self) -> i64 {
+        match self {
+            Self::Closed => 0,
+            Self::HalfOpen => 1,
+            Self::Open => 2,
+        }
+    }
+}
+
+/// Bounded like operation labels for metrics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LikeOperationLabel {
+    Like,
+    Unlike,
+}
+
+impl LikeOperationLabel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Like => "like",
+            Self::Unlike => "unlike",
+        }
+    }
+}
 
 /// Application-wide Prometheus registry and metric instruments.
 #[derive(Clone)]
@@ -153,36 +324,49 @@ impl AppMetrics {
     }
 
     /// Record a completed HTTP request by method, path, status, and duration.
-    pub fn observe_http_request(&self, method: &str, path: &str, status: u16, started_at: Instant) {
+    pub fn observe_http_request(
+        &self,
+        method: HttpMethodLabel,
+        path: &str,
+        status: u16,
+        started_at: Instant,
+    ) {
         let status = status.to_string();
-        self.http_requests_total.with_label_values(&[method, path, &status]).inc();
+        self.http_requests_total.with_label_values(&[method.as_str(), path, &status]).inc();
         self.http_request_duration_seconds
-            .with_label_values(&[method, path])
+            .with_label_values(&[method.as_str(), path])
             .observe(started_at.elapsed().as_secs_f64());
     }
 
     /// Record a cache interaction outcome such as hit, miss, or error.
-    pub fn observe_cache_operation(&self, operation: &str, result: &str) {
-        self.cache_operations_total.with_label_values(&[operation, result]).inc();
+    pub fn observe_cache_operation(
+        &self,
+        operation: CacheOperationLabel,
+        result: CacheResultLabel,
+    ) {
+        self.cache_operations_total.with_label_values(&[operation.as_str(), result.as_str()]).inc();
     }
 
     /// Record an outbound dependency call by service, method, status, and duration.
     pub fn observe_external_call(
         &self,
-        service: &str,
-        method: &str,
-        status: &str,
+        service: ExternalServiceLabel,
+        method: HttpMethodLabel,
+        status: ExternalCallStatusLabel,
         started_at: Instant,
     ) {
-        self.external_calls_total.with_label_values(&[service, method, status]).inc();
+        let status = status.as_label();
+        self.external_calls_total
+            .with_label_values(&[service.as_str(), method.as_str(), status.as_ref()])
+            .inc();
         self.external_call_duration_seconds
-            .with_label_values(&[service, method])
+            .with_label_values(&[service.as_str(), method.as_str()])
             .observe(started_at.elapsed().as_secs_f64());
     }
 
     /// Update the current circuit breaker state for a service.
-    pub fn set_circuit_breaker_state(&self, service: &str, state: i64) {
-        self.circuit_breaker_state.with_label_values(&[service]).set(state);
+    pub fn set_circuit_breaker_state(&self, service: &str, state: CircuitBreakerMetricState) {
+        self.circuit_breaker_state.with_label_values(&[service]).set(state.gauge_value());
     }
 
     /// Update database pool gauges for active, idle, and maximum connections.
@@ -203,8 +387,8 @@ impl AppMetrics {
     }
 
     /// Record a like-domain mutation by content type and operation.
-    pub fn observe_like(&self, content_type: &str, operation: &str) {
-        self.likes_total.with_label_values(&[content_type, operation]).inc();
+    pub fn observe_like_operation(&self, content_type: &str, operation: LikeOperationLabel) {
+        self.likes_total.with_label_values(&[content_type, operation.as_str()]).inc();
     }
 
     /// Render the registry in Prometheus text exposition format.

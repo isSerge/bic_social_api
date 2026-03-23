@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::domain::ContentType;
-use crate::http::observability::AppMetrics;
+use crate::http::observability::{AppMetrics, CacheOperationLabel, CacheResultLabel};
 use crate::repository::error::RepoError;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -198,7 +198,34 @@ impl RedisCacheRepository {
         }
     }
 
+    /// Helper function to record the result of cache operations for observability metrics. It categorizes operations and results into predefined labels for consistent monitoring.
     fn observe_cache_result(&self, operation: &str, result: &str) {
+        let operation = match operation {
+            "get_count" => CacheOperationLabel::GetCount,
+            "batch_get_counts" => CacheOperationLabel::BatchGetCounts,
+            "set_count" => CacheOperationLabel::SetCount,
+            "set_batch_counts" => CacheOperationLabel::SetBatchCounts,
+            "get_like_status" => CacheOperationLabel::GetLikeStatus,
+            "set_like_status" => CacheOperationLabel::SetLikeStatus,
+            "try_acquire_count_lock" => CacheOperationLabel::TryAcquireCountLock,
+            "release_count_lock" => CacheOperationLabel::ReleaseCountLock,
+            "get_token" => CacheOperationLabel::GetToken,
+            "set_token" => CacheOperationLabel::SetToken,
+            "get_content_exists" => CacheOperationLabel::GetContentExists,
+            "set_content_exists" => CacheOperationLabel::SetContentExists,
+            "check_rate_limit" => CacheOperationLabel::CheckRateLimit,
+            "set_leaderboard" => CacheOperationLabel::SetLeaderboard,
+            "get_leaderboard" => CacheOperationLabel::GetLeaderboard,
+            _ => return,
+        };
+
+        let result = match result {
+            "hit" => CacheResultLabel::Hit,
+            "miss" => CacheResultLabel::Miss,
+            "error" => CacheResultLabel::Error,
+            _ => return,
+        };
+
         self.metrics.observe_cache_operation(operation, result);
     }
 }

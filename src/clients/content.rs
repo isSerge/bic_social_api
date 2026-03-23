@@ -11,7 +11,9 @@ use crate::{
     clients::error::ClientError,
     config::{CircuitBreakerConfig, ContentTypeRegistry},
     domain::ContentType,
-    http::observability::AppMetrics,
+    http::observability::{
+        AppMetrics, ExternalCallStatusLabel, ExternalServiceLabel, HttpMethodLabel,
+    },
 };
 
 /// Client for interacting with the Content API, specifically for content existence validation.
@@ -70,15 +72,20 @@ impl HttpContentClient {
         let response = match self.http_client.get(&url).send().await {
             Ok(response) => response,
             Err(error) => {
-                self.metrics.observe_external_call("content_api", "GET", "error", started_at);
+                self.metrics.observe_external_call(
+                    ExternalServiceLabel::ContentApi,
+                    HttpMethodLabel::Get,
+                    ExternalCallStatusLabel::Error,
+                    started_at,
+                );
                 return Err(ClientError::Http(error));
             }
         };
 
         self.metrics.observe_external_call(
-            "content_api",
-            "GET",
-            response.status().as_str(),
+            ExternalServiceLabel::ContentApi,
+            HttpMethodLabel::Get,
+            ExternalCallStatusLabel::Http(response.status()),
             started_at,
         );
 

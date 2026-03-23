@@ -10,7 +10,11 @@ use uuid::Uuid;
 
 use super::circuit_breaker::CircuitBreaker;
 use crate::{
-    clients::error::ClientError, config::CircuitBreakerConfig, http::observability::AppMetrics,
+    clients::error::ClientError,
+    config::CircuitBreakerConfig,
+    http::observability::{
+        AppMetrics, ExternalCallStatusLabel, ExternalServiceLabel, HttpMethodLabel,
+    },
 };
 
 /// Response structure for profile validation
@@ -67,15 +71,20 @@ impl ProfileClient {
         {
             Ok(response) => response,
             Err(error) => {
-                self.metrics.observe_external_call("profile_api", "GET", "error", started_at);
+                self.metrics.observe_external_call(
+                    ExternalServiceLabel::ProfileApi,
+                    HttpMethodLabel::Get,
+                    ExternalCallStatusLabel::Error,
+                    started_at,
+                );
                 return Err(ClientError::Http(error));
             }
         };
 
         self.metrics.observe_external_call(
-            "profile_api",
-            "GET",
-            response.status().as_str(),
+            ExternalServiceLabel::ProfileApi,
+            HttpMethodLabel::Get,
+            ExternalCallStatusLabel::Http(response.status()),
             started_at,
         );
 

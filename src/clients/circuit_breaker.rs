@@ -5,8 +5,9 @@ use std::{
 };
 
 use crate::config::CircuitBreakerConfig;
-use crate::http::observability::AppMetrics;
+use crate::http::observability::{AppMetrics, CircuitBreakerMetricState};
 
+/// State of the circuit breaker, indicating whether calls are allowed (Closed), blocked (Open), or in a testing phase (Half-Open).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum State {
     Closed,
@@ -14,6 +15,7 @@ pub enum State {
     HalfOpen,
 }
 
+/// Internal state of the circuit breaker, tracking the current state, counts of consecutive failures and successes, the time it was opened, and a sliding window of recent calls for failure rate calculations.
 struct CircuitBreakerState {
     state: State,
     consecutive_failures: u32,
@@ -22,6 +24,7 @@ struct CircuitBreakerState {
     recent_calls: VecDeque<(Instant, bool)>, // (timestamp, is_success)
 }
 
+/// A simple circuit breaker implementation that tracks consecutive failures and success rates to determine when to open or close the circuit.
 #[derive(Clone)]
 pub struct CircuitBreaker {
     name: String,
@@ -54,15 +57,17 @@ impl CircuitBreaker {
         breaker
     }
 
+    /// Records the current state of the circuit breaker in the metrics system for observability.
     fn record_state(&self, state: State) {
-        let value = match state {
-            State::Closed => 0,
-            State::HalfOpen => 1,
-            State::Open => 2,
+        let metric_state = match state {
+            State::Closed => CircuitBreakerMetricState::Closed,
+            State::HalfOpen => CircuitBreakerMetricState::HalfOpen,
+            State::Open => CircuitBreakerMetricState::Open,
         };
-        self.metrics.set_circuit_breaker_state(&self.name, value);
+        self.metrics.set_circuit_breaker_state(&self.name, metric_state);
     }
 
+    /// Helper function to acquire the lock on the circuit breaker state, handling potential poisoning and logging errors if the lock is poisoned.
     fn lock_state(&self) -> MutexGuard<'_, CircuitBreakerState> {
         self.state.lock().unwrap_or_else(|poisoned| {
             tracing::error!(service = %self.name, "Circuit breaker state lock poisoned");

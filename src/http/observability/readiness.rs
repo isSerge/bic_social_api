@@ -8,7 +8,7 @@ use sqlx::PgPool;
 
 use crate::config::ContentTypeRegistry;
 
-use super::metrics::AppMetrics;
+use super::metrics::{AppMetrics, ExternalCallStatusLabel, ExternalServiceLabel, HttpMethodLabel};
 
 /// A single dependency failure captured during readiness probing.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -144,24 +144,29 @@ impl ReadinessProbe for RealReadinessProbe {
             match self.http_client.get(&probe_url).send().await {
                 Ok(response) if response.status().is_success() => {
                     self.metrics.observe_external_call(
-                        "content_api",
-                        "GET",
-                        response.status().as_str(),
+                        ExternalServiceLabel::ContentApi,
+                        HttpMethodLabel::Get,
+                        ExternalCallStatusLabel::Http(response.status()),
                         started_at,
                     );
                     any_content_api_healthy = true;
                 }
                 Ok(response) => {
                     self.metrics.observe_external_call(
-                        "content_api",
-                        "GET",
-                        response.status().as_str(),
+                        ExternalServiceLabel::ContentApi,
+                        HttpMethodLabel::Get,
+                        ExternalCallStatusLabel::Http(response.status()),
                         started_at,
                     );
                     upstream_errors.push(format!("{} returned {}", probe_url, response.status()));
                 }
                 Err(error) => {
-                    self.metrics.observe_external_call("content_api", "GET", "error", started_at);
+                    self.metrics.observe_external_call(
+                        ExternalServiceLabel::ContentApi,
+                        HttpMethodLabel::Get,
+                        ExternalCallStatusLabel::Error,
+                        started_at,
+                    );
                     upstream_errors.push(format!("{} request failed: {}", probe_url, error));
                 }
             }

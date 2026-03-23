@@ -3,7 +3,10 @@
 mod metrics;
 mod readiness;
 
-pub use metrics::AppMetrics;
+pub use metrics::{
+    AppMetrics, CacheOperationLabel, CacheResultLabel, CircuitBreakerMetricState,
+    ExternalCallStatusLabel, ExternalServiceLabel, HttpMethodLabel, LikeOperationLabel,
+};
 pub use readiness::{ReadinessProbe, ReadinessReport, RealReadinessProbe};
 
 #[cfg(test)]

@@ -28,7 +28,7 @@ mod tests {
         config::{AppConfig, ContentTypeRegistry},
         http::{
             AppState,
-            observability::{AppMetrics, StaticReadinessProbe},
+            observability::{AppMetrics, HttpMethodLabel, StaticReadinessProbe},
         },
         repository::{cache_repo::MockCacheRepository, like_repo::MockLikeRepository},
         service::{broadcast::Broadcaster, like_service::LikeService},
@@ -41,7 +41,12 @@ mod tests {
         let cache = Arc::new(MockCacheRepository::new());
         let broadcaster = Arc::new(Broadcaster::new(config.server.sse_channel_capacity));
         let app_metrics = Arc::new(AppMetrics::new());
-        app_metrics.observe_http_request("GET", "/metrics", 200, std::time::Instant::now());
+        app_metrics.observe_http_request(
+            HttpMethodLabel::Get,
+            "/metrics",
+            200,
+            std::time::Instant::now(),
+        );
         let like_service = Arc::new(LikeService::new(
             config.cache,
             Arc::new(MockLikeRepository::new()),

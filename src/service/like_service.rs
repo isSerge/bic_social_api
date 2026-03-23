@@ -11,7 +11,7 @@ use crate::config::CacheConfig;
 use crate::domain::{
     ContentType, DomainError, LikeEvent, LikeEventKind, LikeRecord, PaginationCursor,
 };
-use crate::http::observability::AppMetrics;
+use crate::http::observability::{AppMetrics, LikeOperationLabel};
 use crate::repository::{
     cache_repo::{CacheRepository, CachedLikeStatus},
     like_repo::LikeRepository,
@@ -105,7 +105,7 @@ impl LikeService {
                 )
                 .await;
 
-            self.metrics.observe_like(content_type.0.as_ref(), "like");
+            self.metrics.observe_like_operation(content_type.0.as_ref(), LikeOperationLabel::Like);
         }
 
         // Broadcast the like event to subscribers
@@ -156,7 +156,8 @@ impl LikeService {
                 )
                 .await;
 
-            self.metrics.observe_like(content_type.0.as_ref(), "unlike");
+            self.metrics
+                .observe_like_operation(content_type.0.as_ref(), LikeOperationLabel::Unlike);
 
             // Broadcast the unlike event to subscribers
             self.broadcaster.broadcast(LikeEvent {

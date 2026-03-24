@@ -2,20 +2,46 @@ services:
 
   # ── Infrastructure ───────────────────────────────────────────────────────────
 
-  postgres:
-    image: postgres:16
+  postgres-primary:
+    image: bitnami/postgresql:16
     environment:
-      POSTGRES_USER: social
-      POSTGRES_PASSWORD: social_password
-      POSTGRES_DB: social_api
+      POSTGRESQL_REPLICATION_MODE: master
+      POSTGRESQL_REPLICATION_USER: replicator
+      POSTGRESQL_REPLICATION_PASSWORD: replicator_password
+      POSTGRESQL_USERNAME: social
+      POSTGRESQL_PASSWORD: social_password
+      POSTGRESQL_DATABASE: social_api
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-primary-data:/bitnami/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U social -d social_api"]
       interval: 5s
       timeout: 5s
       retries: 10
       start_period: 10s
+
+  postgres-replica:
+    image: bitnami/postgresql:16
+    environment:
+      POSTGRESQL_REPLICATION_MODE: slave
+      POSTGRESQL_MASTER_HOST: postgres-primary
+      POSTGRESQL_MASTER_PORT_NUMBER: 5432
+      POSTGRESQL_REPLICATION_USER: replicator
+      POSTGRESQL_REPLICATION_PASSWORD: replicator_password
+      POSTGRESQL_USERNAME: social
+      POSTGRESQL_PASSWORD: social_password
+      POSTGRESQL_DATABASE: social_api
+    volumes:
+      - postgres-replica-data:/bitnami/postgresql
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U social -d social_api"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
 
   redis:
     image: redis:7-alpine
@@ -63,8 +89,8 @@ services:
     ports:
       - "8080:8080"
     environment:
-      DATABASE_URL: postgres://social:social_password@postgres:5432/social_api
-      READ_DATABASE_URL: postgres://social:social_password@postgres:5432/social_api
+      DATABASE_URL: postgres://social:social_password@postgres-primary:5432/social_api
+      READ_DATABASE_URL: postgres://social:social_password@postgres-replica:5432/social_api
       REDIS_URL: redis://redis:6379
       HTTP_PORT: "8080"
       PROFILE_API_URL: http://mock-profile-api:8084
@@ -72,7 +98,9 @@ services:
       CONTENT_API_BONUS_HUNTER_URL: http://mock-content-api:8081
       CONTENT_API_TOP_PICKS_URL: http://mock-content-api:8081
     depends_on:
-      postgres:
+      postgres-primary:
+        condition: service_healthy
+      postgres-replica:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -84,5 +112,6 @@ services:
 # ── Named volumes ────────────────────────────────────────────────────────────
 
 volumes:
-  postgres-data:
+  postgres-primary-data:
+  postgres-replica-data:
   redis-data:

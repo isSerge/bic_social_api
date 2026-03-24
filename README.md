@@ -80,11 +80,8 @@ The API is available at `http://localhost:8080` once all services are healthy (~
 - **Circuit breaker on outbound HTTP** — calls to the profile API and content API are wrapped in a circuit breaker (closed → open → half-open) to prevent cascading failures if a dependency degrades.
 - **Rate limiting** — authenticated writes are bucketed per user ID; public reads per IP; public write-method endpoints (e.g. `batch/counts`) per IP in a separate write bucket so they cannot exhaust the read quota.
 - **SQLX offline mode** — `.sqlx/` query metadata is checked in so the project compiles without a live database in CI and local non-migration builds.
-
-### Why Cursor-Based Pagination?
-The `/v1/likes/user` endpoint implements cursor-based pagination instead of traditional `LIMIT`/`OFFSET` for two critical reasons:
-1. **Performance at Scale:** `OFFSET Y` requires the database to scan and discard `Y` rows before returning the result. For deep pages, this degrades from $O(1)$ to $O(N)$ and becomes a severe bottleneck. Cursor pagination uses a composite index `(created_at DESC, content_id DESC)` to seek directly to the last seen row in $O(1)$ time.
-2. **Data Consistency:** In a highly active social app, users are constantly liking and unliking content. If a user is on Page 1 and a new like is inserted, traditional `OFFSET` shifts all items down, causing the user to see duplicate items on Page 2. Cursors provide a stable anchor, immune to insertion/deletion drift.
+- **Read-your-writes via cache** — on every like/unlike the Redis cache is updated synchronously (liked timestamp or `UNLIKED_STATUS_SENTINEL`), so status reads are always served from Redis and never see stale data from the streaming replica.
+- **Cursor-based pagination** — `GET /v1/likes/user` uses a `(created_at DESC, content_id DESC)` composite cursor instead of `LIMIT`/`OFFSET` to avoid full index scans on deep pages and to prevent duplicate results when new likes are inserted between pages.
 
 ---
 
@@ -199,7 +196,8 @@ docker rm -f bic_social_pg_temp
 
 | Service | Image / Build | Port | Purpose |
 |---|---|---|---|
-| `postgres` | `postgres:16` | — | Primary + read-replica database |
+| `postgres-primary` | `bitnami/postgresql:16` | — | Write primary; streaming replication source |
+| `postgres-replica` | `bitnami/postgresql:16` | — | Read replica; receives WAL stream from primary |
 | `redis` | `redis:7-alpine` | — | Cache and rate-limit store |
 | `mock-profile-api` | `Dockerfile.mocks` | 8084 | Validates Bearer tokens, returns user UUIDs |
 | `mock-content-api` | `Dockerfile.mocks` | 8081 | Serves all content types (`post`, `bonus_hunter`, `top_picks`) |
@@ -248,8 +246,8 @@ The script uses the seeded tokens and content IDs above and reports `OK` / `FAIL
 ## Trade-offs
 
 - **In-process SSE broadcast** — the `tokio::sync::broadcast` channel is fast and zero-dependency, but state is not shared across multiple API instances. A horizontally scaled deployment would need Redis Pub/Sub or a similar broker to fan out events across pods.
-- **Leaderboard via Background Worker** — To avoid expensive aggregates on the read path, a background worker (`LeaderboardWorker`) pre-computes the top 50 items and stores them in a Redis Sorted Set (`ZREVRANGE`) every 60 seconds. The API only falls back to a full DB query if Redis is completely empty or down.
-- **Single writer, RO replica** — the schema separates write and read pools, but both point to the same Postgres instance in the Docker Compose setup. True replica lag handling is not implemented.
+- **Leaderboard via background worker** — a `LeaderboardWorker` pre-computes the top 50 items into a Redis sorted set every 60 seconds, keeping aggregates off the read path. The API falls back to a direct DB query only if Redis is empty or unavailable.
+- **Single writer, RO replica** — `DATABASE_URL` targets the primary and `READ_DATABASE_URL` targets the streaming replica; read-your-writes consistency for like status is guaranteed by the cache layer (see Key design decisions).
 - **Mock services for auth/content** — the profile and content APIs are stubbed with in-process mocks. Real implementations would add network latency; the circuit breaker is already wired but has not been load-tested against a real dependency.
 - **No pagination on `top_liked`** — the leaderboard endpoint returns a fixed `limit` slice. Cursor-based pagination would be needed if clients need to page through a longer list.
 - **`batch/counts` is a public POST** — POST is used to carry a large JSON body since GET has URL-length limits. It is rate-limited per IP in a dedicated write bucket, but unauthenticated bulk access is still possible; moving it behind auth would be more restrictive.
@@ -261,13 +259,13 @@ The script uses the seeded tokens and content IDs above and reports `OK` / `FAIL
 ## Further Improvements
 
 - **Horizontal scaling** — replace the in-process SSE broadcaster with Redis Pub/Sub so multiple replicas can fan out live-update events
-- **Leaderboard on write** — maintain a Redis sorted set (`ZADD`) on every like/unlike instead of querying Postgres on cache miss
+- **Event-driven leaderboard** — update the Redis sorted set on each like/unlike (`ZADD`/`ZINCRBY`) instead of polling on a fixed 60-second interval, for lower latency and reduced DB fan-out
 - **Cursor pagination on `top_liked`** — add `cursor` / `limit` params consistent with the `GET /user` endpoint
 - **OpenAPI spec** — generate `openapi.json` via `utoipa` or `aide` and serve it at `/docs`
 - **Integration test suite** — add a Docker Compose–based test profile that spins up real Postgres + Redis and runs end-to-end scenario tests
 - **Increase test coverage** — further expand unit and integration tests
 - **Fuzz testing** — apply [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) / [`bolero`](https://github.com/camshaft/bolero) targets to request deserialisation, pagination parsing, and rate-limit key generation to catch unexpected panics on malformed input
-- **More descriptive doc comments** — further extend `///` coverage to struct and methods, include param description.
+- **Add more descriptive doc comments** — extend `///` coverage to config structs and remaining methods, including parameters
 - **Metrics dashboard** — ship a Grafana dashboard definition alongside the Prometheus `/metrics` endpoint
 - **`cargo-chef` in Dockerfile** — replace the dummy `main.rs` layer trick with a proper recipe-based dependency cache
 - **Distroless runtime image** — swap `debian:bookworm-slim` for `gcr.io/distroless/cc-debian12` to shrink attack surface

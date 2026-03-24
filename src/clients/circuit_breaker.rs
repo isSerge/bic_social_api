@@ -83,18 +83,17 @@ impl CircuitBreaker {
             State::Closed => true,
             State::HalfOpen => true,
             State::Open => {
-                if let Some(opened_at) = lock.opened_at {
-                    if opened_at.elapsed() >= Duration::from_secs(self.config.recovery_timeout_secs)
-                    {
-                        tracing::warn!(
-                            service = %self.name,
-                            "Circuit breaker transitioning: OPEN -> HALF-OPEN"
-                        );
-                        lock.state = State::HalfOpen;
-                        lock.consecutive_successes = 0;
-                        self.record_state(State::HalfOpen);
-                        return true;
-                    }
+                if let Some(opened_at) = lock.opened_at
+                    && opened_at.elapsed() >= Duration::from_secs(self.config.recovery_timeout_secs)
+                {
+                    tracing::warn!(
+                        service = %self.name,
+                        "Circuit breaker transitioning: OPEN -> HALF-OPEN"
+                    );
+                    lock.state = State::HalfOpen;
+                    lock.consecutive_successes = 0;
+                    self.record_state(State::HalfOpen);
+                    return true;
                 }
                 false
             }

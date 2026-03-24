@@ -401,10 +401,9 @@ impl LikeService {
         // Try cache first
         if let Ok(cached_items) =
             self.cache.get_leaderboard(content_type.clone(), window_str, limit).await
+            && !cached_items.is_empty()
         {
-            if !cached_items.is_empty() {
-                return Ok(cached_items);
-            }
+            return Ok(cached_items);
         }
 
         // Slow path - query DB directly

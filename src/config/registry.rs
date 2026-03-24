@@ -36,12 +36,12 @@ impl ContentTypeRegistry {
     pub fn from_env() -> Self {
         let mut base_urls = HashMap::new();
         for (key, value) in std::env::vars() {
-            if let Some(stripped) = key.strip_prefix("CONTENT_API_") {
-                if let Some(type_str) = stripped.strip_suffix("_URL") {
-                    let normalized = type_str.to_lowercase();
-                    let ct = ContentType(Arc::from(normalized.clone()));
-                    base_urls.insert(normalized, (ct, value));
-                }
+            if let Some(stripped) = key.strip_prefix("CONTENT_API_")
+                && let Some(type_str) = stripped.strip_suffix("_URL")
+            {
+                let normalized = type_str.to_lowercase();
+                let ct = ContentType(Arc::from(normalized.clone()));
+                base_urls.insert(normalized, (ct, value));
             }
         }
         ContentTypeRegistry { base_urls }

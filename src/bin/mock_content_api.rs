@@ -21,10 +21,17 @@ struct AppState {
 }
 
 #[derive(Debug, Serialize)]
-struct ContentResponse {
+struct ContentItem {
     id: Uuid,
     title: String,
     content_type: String,
+}
+
+// The social-api content client checks `response.items.is_empty()` to determine
+// whether the content exists. The response must use this envelope shape.
+#[derive(Debug, Serialize)]
+struct ContentResponse {
+    items: Vec<ContentItem>,
 }
 
 #[tokio::main]
@@ -61,9 +68,11 @@ async fn get_content(
     }
 
     let payload = ContentResponse {
-        id: content_id,
-        title: format!("Mock {normalized_type} content"),
-        content_type: normalized_type,
+        items: vec![ContentItem {
+            id: content_id,
+            title: format!("Mock {normalized_type} content"),
+            content_type: normalized_type,
+        }],
     };
 
     (StatusCode::OK, Json(payload)).into_response()

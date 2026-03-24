@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use tokio::time::sleep;
+use tracing::instrument;
 use uuid::Uuid;
 
 use crate::clients::content::ContentValidationClient;
@@ -100,6 +101,7 @@ impl LikeService {
 
     /// Handles a like operation: validates the token, checks content existence, and records the like.
     /// Returns (is_new_like, updated_count, timestamp) on success.
+    #[instrument(skip(self), err)]
     pub async fn like(
         &self,
         user_id: Uuid,
@@ -151,6 +153,7 @@ impl LikeService {
 
     /// Handles an unlike operation: validates the token and removes the like record.
     /// Returns (was_liked, updated_count) on success.
+    #[instrument(skip(self), err)]
     pub async fn unlike(
         &self,
         user_id: Uuid,
@@ -175,6 +178,9 @@ impl LikeService {
     }
 
     /// Retrieves the total like count for a given content item.
+    /// DDIA Paranoia Note: If strict bounds are required, this method could be
+    /// wrapped in `tokio::time::timeout` to prevent hanging on DB connection starvation.
+    #[instrument(skip(self), err)]
     pub async fn get_count(
         &self,
         content_type: ContentType,
@@ -185,14 +191,18 @@ impl LikeService {
             return Ok(count);
         }
 
+        // Cache Stampede (Thundering Herd) Prevention:
+        // Only ONE concurrent request is allowed to query the DB for this content item.
         if self.acquire_count_lock_if_available(content_type.clone(), content_id).await {
             return self.refresh_count_cache_with_lock(content_type, content_id).await;
         }
 
+        // Other concurrent requests wait in a poll-loop for the first request to populate the cache.
         if let Some(count) = self.wait_for_cached_count(content_type.clone(), content_id).await {
             return Ok(count);
         }
 
+        // Fallback: If lock holder died or cache is completely down, query DB directly
         self.refresh_count_cache(content_type, content_id).await
     }
 
@@ -264,12 +274,15 @@ impl LikeService {
     /// Retrieves the like status for a specific user and content item.
     /// Returns the timestamp of when the user liked the item, or None if not liked.
     /// Uses a short-lived Redis cache to mask asynchronous replication lag after writes.
+    #[instrument(skip(self), err)]
     pub async fn get_status(
         &self,
         user_id: Uuid,
         content_type: ContentType,
         content_id: Uuid,
     ) -> Result<Option<DateTime<Utc>>, DomainError> {
+        // DDIA Consistency: By checking the cache first, we guarantee Read-After-Write
+        // consistency for the user, hiding the replication lag of the DB reader_pool.
         if let Some(status) =
             self.cache.get_like_status(user_id, content_type.clone(), content_id).await?
         {
@@ -285,6 +298,7 @@ impl LikeService {
     }
 
     /// Retrieves a list of content items that the authenticated user has liked, optionally filtered by content type.
+    #[instrument(skip(self), err)]
     pub async fn get_user_likes(
         &self,
         user_id: Uuid,
@@ -298,6 +312,7 @@ impl LikeService {
     }
 
     /// Batch retrieves like counts for multiple content items in a single request.
+    #[instrument(skip(self, items), fields(batch_size = items.len()), err)]
     pub async fn batch_get_counts(
         &self,
         items: &[(ContentType, Uuid)],
@@ -348,6 +363,7 @@ impl LikeService {
 
     /// Batch retrieves like statuses for multiple content items for the authenticated user.
     /// Intentionally bypasses cache for now because these results are user-scoped
+    #[instrument(skip(self, items), fields(batch_size = items.len(), user_id = %user_id), err)]
     pub async fn batch_get_statuses(
         &self,
         user_id: Uuid,
@@ -359,6 +375,7 @@ impl LikeService {
     }
 
     /// Retrieves the top liked content items, optionally filtered by content type and time range.
+    #[instrument(skip(self), err)]
     pub async fn get_top_liked(
         &self,
         content_type: Option<ContentType>,

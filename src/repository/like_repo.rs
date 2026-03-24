@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use std::sync::Arc;
+use tracing::instrument;
 use uuid::Uuid;
 
 use super::error::RepoError;
@@ -95,6 +96,7 @@ fn to_content_type(raw: String) -> ContentType {
 
 #[async_trait]
 impl LikeRepository for PgLikeRepository {
+    #[instrument(skip(self), level = "debug", err)]
     async fn insert_like(
         &self,
         user_id: Uuid,
@@ -171,6 +173,7 @@ impl LikeRepository for PgLikeRepository {
         Ok((already_existed, count, created_at))
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn delete_like(
         &self,
         user_id: Uuid,
@@ -230,6 +233,7 @@ impl LikeRepository for PgLikeRepository {
         Ok((was_liked, count))
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn get_count(
         &self,
         content_type: ContentType,
@@ -251,6 +255,7 @@ impl LikeRepository for PgLikeRepository {
         Ok(count)
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn get_status(
         &self,
         user_id: Uuid,
@@ -273,6 +278,7 @@ impl LikeRepository for PgLikeRepository {
         Ok(created_at)
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn get_user_likes(
         &self,
         user_id: Uuid,
@@ -316,6 +322,7 @@ impl LikeRepository for PgLikeRepository {
             .collect())
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn batch_get_counts(&self, items: &[(ContentType, Uuid)]) -> Result<Vec<i64>, RepoError> {
         if items.is_empty() {
             return Ok(Vec::new());
@@ -344,6 +351,7 @@ impl LikeRepository for PgLikeRepository {
         Ok(rows.into_iter().map(|row| row.count).collect())
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn batch_get_statuses(
         &self,
         user_id: Uuid,
@@ -378,6 +386,7 @@ impl LikeRepository for PgLikeRepository {
         Ok(rows.into_iter().map(|row| row.created_at).collect())
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn get_top_liked(
         &self,
         content_type: Option<ContentType>,

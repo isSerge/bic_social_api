@@ -1,0 +1,41 @@
+# ── Stage 1: Builder ──────────────────────────────────────────────────────────
+FROM rust:1-bookworm AS builder
+
+WORKDIR /build
+
+# Cache dependency compilation. Dummy files are created for all three bin
+# entry-points so Cargo can resolve the full dependency graph first.
+COPY Cargo.toml Cargo.lock ./
+COPY .sqlx ./.sqlx
+ENV SQLX_OFFLINE=true
+RUN mkdir -p src/bin \
+    && echo 'fn main() {}' > src/main.rs \
+    && echo 'fn main() {}' > src/bin/mock_profile_api.rs \
+    && echo 'fn main() {}' > src/bin/mock_content_api.rs \
+    && cargo build --release --bin mock_profile_api --bin mock_content_api \
+    && rm -rf src
+
+# Build the real mock binaries.
+COPY src ./src
+COPY migrations ./migrations
+RUN touch src/main.rs src/bin/mock_profile_api.rs src/bin/mock_content_api.rs \
+    && cargo build --release --bin mock_profile_api --bin mock_content_api
+
+# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid 1001 appgroup \
+    && useradd --uid 1001 --gid appgroup --no-create-home --shell /sbin/nologin appuser
+
+COPY --from=builder /build/target/release/mock_profile_api /usr/local/bin/mock_profile_api
+COPY --from=builder /build/target/release/mock_content_api /usr/local/bin/mock_content_api
+
+USER appuser
+
+# No CMD — the docker-compose service selects the binary via `command:`.

@@ -1,0 +1,88 @@
+services:
+
+  # ── Infrastructure ───────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: social
+      POSTGRES_PASSWORD: social_password
+      POSTGRES_DB: social_api
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U social -d social_api"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ── Mock external services ───────────────────────────────────────────────────
+
+  mock-profile-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.mocks
+    command: ["/usr/local/bin/mock_profile_api"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  mock-content-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.mocks
+    command: ["/usr/local/bin/mock_content_api"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # ── Application ──────────────────────────────────────────────────────────────
+
+  social-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://social:social_password@postgres:5432/social_api
+      READ_DATABASE_URL: postgres://social:social_password@postgres:5432/social_api
+      REDIS_URL: redis://redis:6379
+      HTTP_PORT: "8080"
+      PROFILE_API_URL: http://mock-profile-api:8084
+      CONTENT_API_POST_URL: http://mock-content-api:8081
+      CONTENT_API_BONUS_HUNTER_URL: http://mock-content-api:8081
+      CONTENT_API_TOP_PICKS_URL: http://mock-content-api:8081
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mock-profile-api:
+        condition: service_healthy
+      mock-content-api:
+        condition: service_healthy
+
+# ── Named volumes ────────────────────────────────────────────────────────────
+
+volumes:
+  postgres-data:
+  redis-data:

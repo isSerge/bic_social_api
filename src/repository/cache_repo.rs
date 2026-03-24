@@ -9,6 +9,7 @@ use deadpool_redis::{
     Connection, Pool,
     redis::{AsyncCommands, Script},
 };
+use tracing::instrument;
 use uuid::Uuid;
 
 // Sentinel value used in the cache to represent an unliked status, since we want to distinguish between "not in cache" and "cached as unliked".
@@ -214,6 +215,7 @@ impl RedisCacheRepository {
 
 #[async_trait]
 impl CacheRepository for RedisCacheRepository {
+    #[instrument(skip(self), level = "debug", err)]
     async fn get_count(
         &self,
         content_type: ContentType,
@@ -246,6 +248,7 @@ impl CacheRepository for RedisCacheRepository {
         }
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn batch_get_counts(
         &self,
         items: &[(ContentType, Uuid)],
@@ -297,6 +300,7 @@ impl CacheRepository for RedisCacheRepository {
         }
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn set_count(
         &self,
         content_type: ContentType,
@@ -321,6 +325,7 @@ impl CacheRepository for RedisCacheRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn set_batch_counts(
         &self,
         items: &[(ContentType, Uuid, i64)],
@@ -364,6 +369,7 @@ impl CacheRepository for RedisCacheRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn get_like_status(
         &self,
         user_id: Uuid,
@@ -421,6 +427,7 @@ impl CacheRepository for RedisCacheRepository {
         }
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn set_like_status(
         &self,
         user_id: Uuid,
@@ -452,6 +459,7 @@ impl CacheRepository for RedisCacheRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn get_token(&self, token: &str) -> Result<Option<Uuid>, RepoError> {
         // Return Ok(None) to indicate cache miss if cannot connect
         let mut conn = acquire_conn_or_return!(self, CacheOperationLabel::GetToken, None);
@@ -484,6 +492,7 @@ impl CacheRepository for RedisCacheRepository {
         }
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn set_token(&self, token: &str, user_id: Uuid, ttl_secs: u64) -> Result<(), RepoError> {
         // Return Ok(()) to indicate cache miss if cannot connect
         let mut conn = acquire_conn_or_return!(self, CacheOperationLabel::SetToken, ());
@@ -502,6 +511,7 @@ impl CacheRepository for RedisCacheRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn get_content_exists(
         &self,
         content_type: ContentType,
@@ -538,6 +548,7 @@ impl CacheRepository for RedisCacheRepository {
         }
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn set_content_exists(
         &self,
         content_type: ContentType,
@@ -565,6 +576,7 @@ impl CacheRepository for RedisCacheRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn check_rate_limit(
         &self,
         key: &str,
@@ -619,6 +631,7 @@ impl CacheRepository for RedisCacheRepository {
         }
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn try_acquire_count_lock(
         &self,
         content_type: ContentType,
@@ -664,6 +677,7 @@ impl CacheRepository for RedisCacheRepository {
         }
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn release_count_lock(
         &self,
         content_type: ContentType,
@@ -688,6 +702,7 @@ impl CacheRepository for RedisCacheRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn set_leaderboard(
         &self,
         content_type: Option<ContentType>,
@@ -732,6 +747,7 @@ impl CacheRepository for RedisCacheRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug", err)]
     async fn get_leaderboard(
         &self,
         content_type: Option<ContentType>,

@@ -426,11 +426,6 @@ mod tests {
     use sqlx::Error as SqlxError;
     use std::sync::Arc;
 
-    // Helper to create a dummy ContentType
-    fn content_type(raw: &str) -> ContentType {
-        ContentType(Arc::from(raw.to_string()))
-    }
-
     fn test_metrics() -> Arc<AppMetrics> {
         Arc::new(AppMetrics::new())
     }
@@ -439,7 +434,7 @@ mod tests {
     async fn test_like_new_updates_cache() {
         let config = CacheConfig::default();
         let user_id = Uuid::new_v4();
-        let ct = content_type("post");
+        let ct = ContentType::from("post");
         let content_id = Uuid::new_v4();
         let timestamp = Utc::now();
 
@@ -485,7 +480,7 @@ mod tests {
     #[tokio::test]
     async fn test_like_existing_skips_cache() {
         let user_id = Uuid::new_v4();
-        let ct = content_type("post");
+        let ct = ContentType::from("post");
         let content_id = Uuid::new_v4();
         let timestamp = Utc::now();
 
@@ -525,7 +520,7 @@ mod tests {
     async fn test_like_repo_error_bubbles_up() {
         // Arrange
         let user_id = Uuid::new_v4();
-        let ct = content_type("post");
+        let ct = ContentType::from("post");
         let content_id = Uuid::new_v4();
         let mut mock_cache = MockCacheRepository::new();
         let mut mock_repo = MockLikeRepository::new();
@@ -564,7 +559,7 @@ mod tests {
         // Arrange
         let config = CacheConfig::default();
         let user_id = Uuid::new_v4();
-        let ct = content_type("post");
+        let ct = ContentType::from("post");
         let content_id = Uuid::new_v4();
         let like_count_after = 41;
 
@@ -622,7 +617,7 @@ mod tests {
     async fn test_unlike_non_existing_skips_cache() {
         // Arrange
         let user_id = Uuid::new_v4();
-        let ct = content_type("post");
+        let ct = ContentType::from("post");
         let content_id = Uuid::new_v4();
 
         let mut mock_repo = MockLikeRepository::new();
@@ -665,7 +660,7 @@ mod tests {
     async fn test_unlike_repo_error_bubbles_up() {
         // Arrange
         let user_id = Uuid::new_v4();
-        let ct = content_type("post");
+        let ct = ContentType::from("post");
         let content_id = Uuid::new_v4();
         let mock_cache = MockCacheRepository::new();
         let mut mock_repo = MockLikeRepository::new();
@@ -701,7 +696,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_count_cache_hit_returns_early() {
-        let ct = content_type("bonus_hunter");
+        let ct = ContentType::from("bonus_hunter");
         let content_id = Uuid::new_v4();
 
         let mut mock_repo = MockLikeRepository::new();
@@ -734,7 +729,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_count_cache_miss_calls_db_and_populates_cache() {
         let config = CacheConfig::default();
-        let ct = content_type("bonus_hunter");
+        let ct = ContentType::from("bonus_hunter");
         let content_id = Uuid::new_v4();
         let db_count = 150;
 
@@ -785,7 +780,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_count_waits_for_locked_refresh_and_uses_cached_value() {
-        let ct = content_type("bonus_hunter");
+        let ct = ContentType::from("bonus_hunter");
         let content_id = Uuid::new_v4();
         let mut sequence = Sequence::new();
 
@@ -831,7 +826,7 @@ mod tests {
     async fn test_get_status_liked() {
         // Arrange
         let user_id = Uuid::new_v4();
-        let content_type = content_type("post");
+        let content_type = ContentType::from("post");
         let content_id = Uuid::new_v4();
         let expected_time = Utc.with_ymd_and_hms(2026, 2, 2, 17, 0, 0).unwrap();
         let mut mock_cache = MockCacheRepository::new();
@@ -866,7 +861,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_status_uses_short_lived_cache_hit() {
         let user_id = Uuid::new_v4();
-        let content_type = content_type("post");
+        let content_type = ContentType::from("post");
         let content_id = Uuid::new_v4();
         let expected_time = Utc.with_ymd_and_hms(2026, 2, 2, 17, 0, 0).unwrap();
 
@@ -897,7 +892,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_status_uses_short_lived_cache_for_unliked_state() {
         let user_id = Uuid::new_v4();
-        let content_type = content_type("post");
+        let content_type = ContentType::from("post");
         let content_id = Uuid::new_v4();
 
         let mut mock_cache = MockCacheRepository::new();
@@ -928,8 +923,8 @@ mod tests {
     async fn test_batch_get_counts() {
         // Arrange
         let config = CacheConfig::default();
-        let ct1 = content_type("post");
-        let ct2 = content_type("bonus_hunter");
+        let ct1 = ContentType::from("post");
+        let ct2 = ContentType::from("bonus_hunter");
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
         let items = vec![(ct1.clone(), id1), (ct2.clone(), id2)];
@@ -972,8 +967,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_get_counts_uses_cache_when_all_items_are_present() {
-        let ct1 = content_type("post");
-        let ct2 = content_type("bonus_hunter");
+        let ct1 = ContentType::from("post");
+        let ct2 = ContentType::from("bonus_hunter");
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
         let items = vec![(ct1, id1), (ct2, id2)];
@@ -1006,7 +1001,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_get_counts_partial_cache_hit() {
-        let ct1 = content_type("post");
+        let ct1 = ContentType::from("post");
         let id1 = Uuid::new_v4(); // Will be in cache
         let id2 = Uuid::new_v4(); // Will be a cache MISS
 
@@ -1049,7 +1044,7 @@ mod tests {
     async fn test_batch_get_statuses() {
         // Arrange
         let user_id = Uuid::new_v4();
-        let ct1 = content_type("post");
+        let ct1 = ContentType::from("post");
         let id1 = Uuid::new_v4();
         let ts = Utc.with_ymd_and_hms(2026, 2, 2, 17, 0, 0).unwrap();
         let mock_cache = MockCacheRepository::new();
@@ -1082,7 +1077,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_top_liked() {
         // Arrange
-        let content_type = content_type("post");
+        let content_type = ContentType::from("post");
         let since = Utc::now() - chrono::Duration::hours(1);
         let limit = 10;
         let id1 = Uuid::new_v4();
@@ -1129,7 +1124,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_top_liked_cache_hit_for_specific_content_type() {
-        let content_type = content_type("post");
+        let content_type = ContentType::from("post");
         let expected_ct = content_type.clone();
         let since = Utc::now() - chrono::Duration::hours(1);
         let limit = 10;
@@ -1169,8 +1164,8 @@ mod tests {
         let limit = 10;
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
-        let ct1 = content_type("post");
-        let ct2 = content_type("bonus_hunter");
+        let ct1 = ContentType::from("post");
+        let ct2 = ContentType::from("bonus_hunter");
 
         let mut mock_cache = MockCacheRepository::new();
         mock_cache
@@ -1205,8 +1200,8 @@ mod tests {
         let limit = 10;
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
-        let ct1 = content_type("post");
-        let ct2 = content_type("bonus_hunter");
+        let ct1 = ContentType::from("post");
+        let ct2 = ContentType::from("bonus_hunter");
 
         let mut mock_cache = MockCacheRepository::new();
         mock_cache
@@ -1243,7 +1238,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_user_likes_with_cursor_and_filter() {
         let user_id = Uuid::new_v4();
-        let content_type = content_type("top_picks");
+        let content_type = ContentType::from("top_picks");
         let limit = 20;
         let ts = Utc.with_ymd_and_hms(2026, 2, 2, 17, 0, 0).unwrap();
         let cursor_id = Uuid::new_v4();
@@ -1279,7 +1274,7 @@ mod tests {
     async fn test_like_content_cache_miss_calls_client_and_populates_cache() {
         let config = CacheConfig::default();
         let user_id = Uuid::new_v4();
-        let ct = content_type("post");
+        let ct = ContentType::from("post");
         let content_id = Uuid::new_v4();
         let timestamp = Utc::now();
 
@@ -1339,7 +1334,7 @@ mod tests {
     async fn test_like_content_cache_hit_skips_client() {
         let config = CacheConfig::default();
         let user_id = Uuid::new_v4();
-        let ct = content_type("post");
+        let ct = ContentType::from("post");
         let content_id = Uuid::new_v4();
         let timestamp = Utc::now();
 

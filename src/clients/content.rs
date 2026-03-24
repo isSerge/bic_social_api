@@ -155,11 +155,6 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    // TODO: re-use
-    fn content_type(raw: &str) -> ContentType {
-        ContentType(Arc::from(raw.to_string()))
-    }
-
     /// Helper to create a registry that points to our mock server for testing
     fn registry_for_mock_server(
         mock_server: &MockServer,
@@ -174,7 +169,7 @@ mod tests {
     async fn validate_content_success() {
         let mock_server = MockServer::start().await;
         let content_id = Uuid::new_v4();
-        let content_type = content_type("post");
+        let content_type = ContentType::from("post");
 
         Mock::given(method("GET"))
             .and(path(format!("/v1/post/{}", content_id)))
@@ -223,7 +218,7 @@ mod tests {
             CircuitBreakerConfig::default(),
             Arc::new(AppMetrics::new()),
         );
-        let content_type = content_type("post");
+        let content_type = ContentType::from("post");
 
         let result = client.validate_content(content_type, content_id).await;
 
@@ -248,7 +243,7 @@ mod tests {
             CircuitBreakerConfig::default(),
             Arc::new(AppMetrics::new()),
         );
-        let content_type = content_type("post");
+        let content_type = ContentType::from("post");
         let result = client.validate_content(content_type, content_id).await;
 
         assert!(matches!(result.unwrap_err(), ClientError::NotFound));
@@ -272,7 +267,7 @@ mod tests {
             CircuitBreakerConfig::default(),
             Arc::new(AppMetrics::new()),
         );
-        let content_type = content_type("post");
+        let content_type = ContentType::from("post");
         let result = client.validate_content(content_type, content_id).await;
 
         assert!(matches!(result.unwrap_err(), ClientError::DependencyUnavailable(_)));
@@ -296,7 +291,7 @@ mod tests {
             CircuitBreakerConfig::default(),
             Arc::new(AppMetrics::new()),
         );
-        let content_type = content_type("invalid_type");
+        let content_type = ContentType::from("invalid_type");
         let result = client.validate_content(content_type, content_id).await;
 
         assert!(matches!(result.unwrap_err(), ClientError::NotFound));
@@ -329,7 +324,7 @@ mod tests {
         );
 
         // Call 1: Fails, but circuit remains Closed
-        let content_type = content_type("post");
+        let content_type = ContentType::from("post");
         let result1 = client.validate_content(content_type.clone(), content_id).await;
         assert!(matches!(result1.unwrap_err(), ClientError::DependencyUnavailable(_)));
 
@@ -370,7 +365,7 @@ mod tests {
         );
 
         // Call 1: Returns 404. This is a business logic error, NOT a network failure.
-        let content_type = content_type("post");
+        let content_type = ContentType::from("post");
         let result1 = client.validate_content(content_type.clone(), content_id).await;
         assert!(matches!(result1.unwrap_err(), ClientError::NotFound));
 

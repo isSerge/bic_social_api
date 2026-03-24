@@ -827,11 +827,6 @@ mod tests {
         Arc::new(AppMetrics::new())
     }
 
-    // TODO: re-use
-    fn content_type(name: &str) -> ContentType {
-        ContentType(Arc::from(name.to_string()))
-    }
-
     // Helper to create a RedisCacheRepository with a broken pool for testing graceful degradation
     fn broken_redis_pool() -> Pool {
         let config = Config::from_url("redis://invalid:6379");
@@ -840,7 +835,7 @@ mod tests {
 
     #[test]
     fn test_leaderboard_key_for_specific_content_type() {
-        let key = RedisCacheRepository::leaderboard_key(Some(content_type("post")), "24h");
+        let key = RedisCacheRepository::leaderboard_key(Some(ContentType::from("post")), "24h");
 
         assert_eq!(key, "leaderboard:post:24h");
     }
@@ -857,7 +852,7 @@ mod tests {
         let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
 
         // This should NOT return a RepoError. It should return Ok(None) so the service can fallback to Postgres.
-        let result = cache.get_count(content_type("post"), Uuid::new_v4()).await;
+        let result = cache.get_count(ContentType::from("post"), Uuid::new_v4()).await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), None);
@@ -868,7 +863,7 @@ mod tests {
         let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
 
         // This should NOT return a RepoError. It should return Ok(()) because the DB write already succeeded anyway.
-        let result = cache.set_count(content_type("post"), Uuid::new_v4(), 42, 300).await;
+        let result = cache.set_count(ContentType::from("post"), Uuid::new_v4(), 42, 300).await;
 
         assert!(result.is_ok());
     }
@@ -877,8 +872,8 @@ mod tests {
     async fn test_batch_get_counts_degrades_gracefully_when_redis_is_down() {
         let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
         let items = vec![
-            (content_type("post"), Uuid::new_v4()),
-            (content_type("bonus_hunter"), Uuid::new_v4()),
+            (ContentType::from("post"), Uuid::new_v4()),
+            (ContentType::from("bonus_hunter"), Uuid::new_v4()),
         ];
 
         let result = cache.batch_get_counts(&items).await;
@@ -891,8 +886,8 @@ mod tests {
     async fn test_set_batch_counts_degrades_gracefully_when_redis_is_down() {
         let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
         let items = vec![
-            (content_type("post"), Uuid::new_v4(), 42),
-            (content_type("bonus_hunter"), Uuid::new_v4(), 7),
+            (ContentType::from("post"), Uuid::new_v4(), 42),
+            (ContentType::from("bonus_hunter"), Uuid::new_v4(), 7),
         ];
 
         let result = cache.set_batch_counts(&items, 300).await;
@@ -905,7 +900,7 @@ mod tests {
         let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
 
         let result =
-            cache.get_like_status(Uuid::new_v4(), content_type("post"), Uuid::new_v4()).await;
+            cache.get_like_status(Uuid::new_v4(), ContentType::from("post"), Uuid::new_v4()).await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), None);
@@ -918,7 +913,7 @@ mod tests {
         let result = cache
             .set_like_status(
                 Uuid::new_v4(),
-                content_type("post"),
+                ContentType::from("post"),
                 Uuid::new_v4(),
                 CachedLikeStatus::Unliked,
                 5,
@@ -932,7 +927,8 @@ mod tests {
     async fn test_try_acquire_count_lock_degrades_gracefully_when_redis_is_down() {
         let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
 
-        let result = cache.try_acquire_count_lock(content_type("post"), Uuid::new_v4(), 1).await;
+        let result =
+            cache.try_acquire_count_lock(ContentType::from("post"), Uuid::new_v4(), 1).await;
 
         assert!(result.is_ok());
         assert!(!result.unwrap());
@@ -942,7 +938,7 @@ mod tests {
     async fn test_release_count_lock_degrades_gracefully_when_redis_is_down() {
         let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
 
-        let result = cache.release_count_lock(content_type("post"), Uuid::new_v4()).await;
+        let result = cache.release_count_lock(ContentType::from("post"), Uuid::new_v4()).await;
 
         assert!(result.is_ok());
     }
@@ -972,7 +968,7 @@ mod tests {
     async fn test_get_content_exists_degrades_gracefully_when_redis_is_down() {
         let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
 
-        let result = cache.get_content_exists(content_type("post"), Uuid::new_v4()).await;
+        let result = cache.get_content_exists(ContentType::from("post"), Uuid::new_v4()).await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), None);
@@ -982,7 +978,8 @@ mod tests {
     async fn test_set_content_exists_degrades_gracefully_when_redis_is_down() {
         let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
 
-        let result = cache.set_content_exists(content_type("post"), Uuid::new_v4(), 3600).await;
+        let result =
+            cache.set_content_exists(ContentType::from("post"), Uuid::new_v4(), 3600).await;
 
         assert!(result.is_ok());
     }
@@ -1004,11 +1001,11 @@ mod tests {
     async fn test_set_leaderboard_degrades_gracefully_when_redis_is_down() {
         let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
         let items = vec![
-            (content_type("post"), Uuid::new_v4(), 10),
-            (content_type("post"), Uuid::new_v4(), 5),
+            (ContentType::from("post"), Uuid::new_v4(), 10),
+            (ContentType::from("post"), Uuid::new_v4(), 5),
         ];
 
-        let result = cache.set_leaderboard(Some(content_type("post")), "24h", items, 90).await;
+        let result = cache.set_leaderboard(Some(ContentType::from("post")), "24h", items, 90).await;
 
         assert!(result.is_ok());
     }
@@ -1026,7 +1023,7 @@ mod tests {
     async fn test_get_leaderboard_degrades_gracefully_when_redis_is_down() {
         let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
 
-        let result = cache.get_leaderboard(Some(content_type("post")), "24h", 10).await;
+        let result = cache.get_leaderboard(Some(ContentType::from("post")), "24h", 10).await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Vec::new());
@@ -1036,7 +1033,7 @@ mod tests {
     async fn test_get_leaderboard_with_zero_limit() {
         let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
 
-        let result = cache.get_leaderboard(Some(content_type("post")), "24h", 0).await;
+        let result = cache.get_leaderboard(Some(ContentType::from("post")), "24h", 0).await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Vec::new());

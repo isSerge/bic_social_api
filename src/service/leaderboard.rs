@@ -175,14 +175,9 @@ mod tests {
         LeaderboardWorker::new(config, registry, Arc::new(mock_db), Arc::new(mock_cache))
     }
 
-    // TODO: use common helper
-    fn content_type(name: &str) -> ContentType {
-        ContentType(Arc::from(name.to_string()))
-    }
-
     #[tokio::test]
     async fn test_refresh_single_leaderboard_success() {
-        let content_type = content_type("post");
+        let content_type = ContentType::from("post");
         let window = "24h";
         // Create a fixed timestamp so we can assert exact matching
         let since = Utc.with_ymd_and_hms(2026, 2, 1, 0, 0, 0).unwrap();
@@ -227,7 +222,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_single_leaderboard_db_error_aborts_cleanly() {
-        let content_type = content_type("post");
+        let content_type = ContentType::from("post");
         let window = "24h";
         let since = Utc::now() - Duration::hours(24);
         let limit = 50;
@@ -251,7 +246,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_single_leaderboard_redis_error_completes_cleanly() {
-        let content_type = content_type("post");
+        let content_type = ContentType::from("post");
         let window = "24h";
         let since = Utc::now() - Duration::hours(24);
         let limit = 50;

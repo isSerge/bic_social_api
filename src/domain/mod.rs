@@ -16,3 +16,9 @@ use std::sync::Arc;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, sqlx::Type, Serialize)]
 #[sqlx(transparent, no_pg_array)]
 pub struct ContentType(pub Arc<str>);
+
+impl From<&str> for ContentType {
+    fn from(s: &str) -> Self {
+        ContentType(Arc::from(s))
+    }
+}

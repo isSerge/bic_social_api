@@ -467,7 +467,7 @@ mod tests {
     use crate::{
         clients::{content::MockContentValidationClient, profile::ProfileClient},
         config::{AppConfig, CacheConfig, ContentTypeRegistry},
-        domain::{ContentType, LikeRecord},
+        domain::LikeRecord,
         http::{
             AppState,
             observability::{AppMetrics, StaticReadinessProbe},
@@ -540,12 +540,6 @@ mod tests {
         serde_json::from_slice(&body_bytes).expect("Failed to parse JSON")
     }
 
-    // TODO: move it somewhere common
-    // Helper to create a dummy ContentType
-    fn content_type(raw: &str) -> ContentType {
-        ContentType(Arc::from(raw.to_string()))
-    }
-
     fn test_http_client() -> reqwest_middleware::ClientWithMiddleware {
         ClientBuilder::new(reqwest::Client::new()).build()
     }
@@ -557,7 +551,7 @@ mod tests {
         let test_user_id = Uuid::new_v4();
         let content_id = Uuid::new_v4();
         let timestamp = Utc::now();
-        let content_type = content_type("post");
+        let content_type = ContentType::from("post");
         let like_count = 42;
         let status_ttl = CacheConfig::default().user_status_ttl_secs;
 
@@ -653,7 +647,7 @@ mod tests {
     async fn test_unlike_handler_success() {
         let test_user_id = Uuid::new_v4();
         let content_id = Uuid::new_v4();
-        let content_type = content_type("post");
+        let content_type = ContentType::from("post");
         let like_count_after = 41;
         let status_ttl = CacheConfig::default().user_status_ttl_secs;
 
@@ -720,14 +714,14 @@ mod tests {
         mock_cache.expect_get_count().times(1).returning(|_, _| Ok(None));
         mock_cache
             .expect_try_acquire_count_lock()
-            .with(eq(content_type("post")), eq(content_id), eq(1u64))
+            .with(eq(ContentType::from("post")), eq(content_id), eq(1u64))
             .times(1)
             .returning(|_, _, _| Ok(true));
         // Cache repo should call set_count with the count from repo after cache miss
         mock_cache
             .expect_set_count()
             .with(
-                eq(content_type("post")),
+                eq(ContentType::from("post")),
                 eq(content_id),
                 eq(like_count),
                 eq(CACHE_TTL_LIKE_COUNTS_SECS),
@@ -736,7 +730,7 @@ mod tests {
             .returning(|_, _, _, _| Ok(()));
         mock_cache
             .expect_release_count_lock()
-            .with(eq(content_type("post")), eq(content_id))
+            .with(eq(ContentType::from("post")), eq(content_id))
             .times(1)
             .returning(|_, _| Ok(()));
 
@@ -919,7 +913,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_user_likes_pagination_has_more() {
         let test_user_id = Uuid::new_v4();
-        let ct = content_type("post");
+        let ct = ContentType::from("post");
         let ts1 = Utc.with_ymd_and_hms(2026, 2, 2, 17, 0, 0).unwrap();
         let ts2 = Utc.with_ymd_and_hms(2026, 2, 2, 16, 0, 0).unwrap();
         let ts3 = Utc.with_ymd_and_hms(2026, 2, 2, 15, 0, 0).unwrap();
@@ -1017,7 +1011,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_user_likes_with_content_type_filter() {
         let test_user_id = Uuid::new_v4();
-        let filter_ct = content_type("bonus_hunter");
+        let filter_ct = ContentType::from("bonus_hunter");
 
         // Simulate a request with content_type filter and verify that the service correctly passes it down to the repo
         let mut mock_repo = MockLikeRepository::new();

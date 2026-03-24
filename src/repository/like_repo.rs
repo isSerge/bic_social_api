@@ -519,16 +519,12 @@ mod tests {
         sqlx::query(&drop_sql).execute(&admin_pool).await.expect("drop test database");
     }
 
-    fn content_type(raw: &str) -> ContentType {
-        ContentType(Arc::from(raw.to_string()))
-    }
-
     #[tokio::test]
     async fn insert_like_is_idempotent() {
         let ctx = setup_test_context().await;
         let repo = ctx.repo.clone();
         let user_id = Uuid::new_v4();
-        let content_type = content_type("post");
+        let content_type = ContentType::from("post");
         let content_id = Uuid::new_v4();
 
         let (already_existed_1, count_1, _) = repo
@@ -554,7 +550,7 @@ mod tests {
         let repo = ctx.repo.clone();
 
         let user_id = Uuid::new_v4();
-        let ct = content_type("bonus_hunter");
+        let ct = ContentType::from("bonus_hunter");
         let content_id = Uuid::new_v4();
 
         repo.insert_like(user_id, ct.clone(), content_id).await.expect("seed insert");
@@ -577,8 +573,10 @@ mod tests {
         let ctx = setup_test_context().await;
         let repo = ctx.repo.clone();
 
-        let count =
-            repo.get_count(content_type("top_picks"), Uuid::new_v4()).await.expect("get count");
+        let count = repo
+            .get_count(ContentType::from("top_picks"), Uuid::new_v4())
+            .await
+            .expect("get count");
         assert_eq!(count, 0);
 
         teardown_test_context(ctx).await;
@@ -589,7 +587,7 @@ mod tests {
         let ctx = setup_test_context().await;
         let repo = ctx.repo.clone();
 
-        let ct = content_type("post");
+        let ct = ContentType::from("post");
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
 
@@ -612,7 +610,7 @@ mod tests {
         let repo = ctx.repo.clone();
 
         let user_id = Uuid::new_v4();
-        let ct = content_type("post");
+        let ct = ContentType::from("post");
         let liked_id = Uuid::new_v4();
         let unliked_id = Uuid::new_v4();
 
@@ -636,7 +634,7 @@ mod tests {
         let repo = ctx.repo.clone();
 
         let user_id = Uuid::new_v4();
-        let ct = content_type("post");
+        let ct = ContentType::from("post");
 
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
@@ -667,7 +665,7 @@ mod tests {
     async fn test_concurrent_likes_race_condition() {
         let ctx = setup_test_context().await;
         let repo = ctx.repo.clone();
-        let ct = content_type("post");
+        let ct = ContentType::from("post");
         let content_id = Uuid::new_v4();
 
         // Spawn 100 concurrent like requests for the same content item from different users

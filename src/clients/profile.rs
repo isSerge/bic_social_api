@@ -7,6 +7,7 @@ use axum::http;
 use reqwest::StatusCode;
 use reqwest_middleware::{ClientWithMiddleware, Error as MiddlewareError};
 use serde::Deserialize;
+use tracing::instrument;
 use uuid::Uuid;
 
 use super::circuit_breaker::CircuitBreaker;
@@ -59,6 +60,7 @@ impl ProfileClient {
         }
     }
 
+    /// Internal method to execute the HTTP request for token validation. Separated from the public validate_token method to allow for better error handling and circuit breaker logic.
     async fn execute_request(&self, token: &str) -> Result<Uuid, ClientError> {
         let started_at = Instant::now();
         let url = format!("{}/v1/auth/validate", self.base_url.trim_end_matches('/'));
@@ -116,6 +118,7 @@ impl ProfileClient {
 
 #[async_trait]
 impl ProfileValidationClient for ProfileClient {
+    #[instrument(skip(self), err)]
     async fn validate_token(&self, token: &str) -> Result<Uuid, ClientError> {
         if !self.breaker.is_call_permitted() {
             tracing::warn!("Circuit breaker OPEN for Profile API");

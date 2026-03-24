@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use reqwest::StatusCode;
 use reqwest_middleware::{ClientWithMiddleware, Error as MiddlewareError};
 use serde::Deserialize;
+use tracing::instrument;
 use uuid::Uuid;
 
 use super::circuit_breaker::CircuitBreaker;
@@ -111,6 +112,7 @@ impl HttpContentClient {
 
 #[async_trait]
 impl ContentValidationClient for HttpContentClient {
+    #[instrument(skip(self), err)]
     async fn validate_content(
         &self,
         content_type: ContentType,

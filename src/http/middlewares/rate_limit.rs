@@ -14,8 +14,6 @@ use uuid::Uuid;
 use crate::http::{AppState, error::ApiError};
 use crate::repository::cache_repo::RateLimitStatus;
 
-// TODO: consider adding to config
-const ONE_MINUTE_WINDOW: u64 = 60; // Window size in seconds
 const RATE_LIMIT_LIMIT_HEADER: HeaderName = HeaderName::from_static("x-ratelimit-limit");
 const RATE_LIMIT_REMAINING_HEADER: HeaderName = HeaderName::from_static("x-ratelimit-remaining");
 const RATE_LIMIT_RESET_HEADER: HeaderName = HeaderName::from_static("x-ratelimit-reset");
@@ -43,7 +41,10 @@ pub async fn rate_limiter(
     };
 
     // Check the rate limit for this key (IP or user token)
-    let rate_limit = state.cache.check_rate_limit(&key, limit, ONE_MINUTE_WINDOW).await?;
+    let rate_limit = state
+        .cache
+        .check_rate_limit(&key, limit, state.config.limits.rate_limit_window_secs)
+        .await?;
 
     if !rate_limit.allowed {
         let mut response =
@@ -168,7 +169,7 @@ mod tests {
             .with(
                 eq(expected_key),
                 eq(AppConfig::default().limits.read_per_minute),
-                eq(ONE_MINUTE_WINDOW),
+                eq(AppConfig::default().limits.rate_limit_window_secs),
             )
             .times(1)
             .returning(|_, _, _| {
@@ -207,7 +208,7 @@ mod tests {
             .with(
                 eq(expected_key),
                 eq(AppConfig::default().limits.write_per_minute),
-                eq(ONE_MINUTE_WINDOW),
+                eq(AppConfig::default().limits.rate_limit_window_secs),
             )
             .times(1)
             .returning(|_, _, _| {
@@ -243,7 +244,11 @@ mod tests {
         let mut mock_cache = MockCacheRepository::new();
         mock_cache
             .expect_check_rate_limit()
-            .with(eq(expected_key), eq(limit), eq(ONE_MINUTE_WINDOW))
+            .with(
+                eq(expected_key),
+                eq(limit),
+                eq(AppConfig::default().limits.rate_limit_window_secs),
+            )
             .times(1)
             .returning(move |_, _, _| {
                 Ok(RateLimitStatus { allowed: true, current_count: limit, retry_after_secs: 60 })
@@ -273,7 +278,11 @@ mod tests {
         let mut mock_cache = MockCacheRepository::new();
         mock_cache
             .expect_check_rate_limit()
-            .with(eq(expected_key), eq(limit), eq(ONE_MINUTE_WINDOW))
+            .with(
+                eq(expected_key),
+                eq(limit),
+                eq(AppConfig::default().limits.rate_limit_window_secs),
+            )
             .times(1)
             .returning(move |_, _, _| {
                 Ok(RateLimitStatus {
@@ -308,7 +317,11 @@ mod tests {
         let mut mock_cache = MockCacheRepository::new();
         mock_cache
             .expect_check_rate_limit()
-            .with(eq(expected_key), eq(limit), eq(ONE_MINUTE_WINDOW))
+            .with(
+                eq(expected_key),
+                eq(limit),
+                eq(AppConfig::default().limits.rate_limit_window_secs),
+            )
             .times(1)
             .returning(|_, _, _| {
                 Ok(RateLimitStatus { allowed: true, current_count: 0, retry_after_secs: 0 })

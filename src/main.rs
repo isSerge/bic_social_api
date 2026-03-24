@@ -64,11 +64,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize Redis connection pool for caching
     let redis_pool = deadpool_redis::Config::from_url(&config.redis.url)
         .builder()
-        .expect("Invalid Redis URL")
+        .map_err(|e| format!("Invalid Redis URL: {e}"))?
         .max_size(config.redis.pool_size)
         .runtime(Runtime::Tokio1)
         .build()
-        .expect("Failed to create Redis pool"); // TODO: handle Redis connection errors gracefully
+        .map_err(|e| format!("Failed to create Redis pool: {e}"))?;
 
     // Create Like Repository, and Like Service
     let like_repo: Arc<dyn LikeRepository> =

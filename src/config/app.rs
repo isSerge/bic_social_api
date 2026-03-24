@@ -83,6 +83,8 @@ pub struct CacheConfig {
     pub content_validation_ttl_secs: u64,
     #[serde(rename = "cache_ttl_user_status_secs", default = "default_cache_ttl_user_status_secs")]
     pub user_status_ttl_secs: u64,
+    #[serde(rename = "cache_ttl_leaderboard_secs", default = "default_cache_ttl_leaderboard_secs")]
+    pub leaderboard_ttl_secs: u64,
 }
 
 impl Default for CacheConfig {
@@ -91,6 +93,7 @@ impl Default for CacheConfig {
             like_counts_ttl_secs: default_cache_ttl_like_counts_secs(),
             content_validation_ttl_secs: default_cache_ttl_content_validation_secs(),
             user_status_ttl_secs: default_cache_ttl_user_status_secs(),
+            leaderboard_ttl_secs: default_cache_ttl_leaderboard_secs(),
         }
     }
 }
@@ -104,10 +107,16 @@ pub struct LimitsConfig {
     pub write_per_minute: u32,
     #[serde(rename = "rate_limit_read_per_minute", default = "default_rate_limit_read_per_minute")]
     pub read_per_minute: u32,
+    #[serde(rename = "rate_limit_window_secs", default = "default_rate_limit_window_secs")]
+    pub rate_limit_window_secs: u64,
     #[serde(default = "default_max_batch_pairs")]
     pub max_batch_pairs: usize,
     #[serde(default = "default_max_top_liked_limit")]
     pub max_top_liked_limit: usize,
+    #[serde(default = "default_user_likes_default_page_size")]
+    pub user_likes_default_page_size: usize,
+    #[serde(default = "default_user_likes_max_page_size")]
+    pub user_likes_max_page_size: usize,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -202,12 +211,16 @@ impl Default for AppConfig {
                 like_counts_ttl_secs: default_cache_ttl_like_counts_secs(),
                 content_validation_ttl_secs: default_cache_ttl_content_validation_secs(),
                 user_status_ttl_secs: default_cache_ttl_user_status_secs(),
+                leaderboard_ttl_secs: default_cache_ttl_leaderboard_secs(),
             },
             limits: LimitsConfig {
                 write_per_minute: default_rate_limit_write_per_minute(),
                 read_per_minute: default_rate_limit_read_per_minute(),
+                rate_limit_window_secs: default_rate_limit_window_secs(),
                 max_batch_pairs: default_max_batch_pairs(),
                 max_top_liked_limit: default_max_top_liked_limit(),
+                user_likes_default_page_size: default_user_likes_default_page_size(),
+                user_likes_max_page_size: default_user_likes_max_page_size(),
             },
             circuit_breaker: CircuitBreakerConfig {
                 failure_threshold: default_circuit_breaker_failure_threshold(),
@@ -267,6 +280,10 @@ fn default_rate_limit_read_per_minute() -> u32 {
     1000
 }
 
+fn default_rate_limit_window_secs() -> u64 {
+    60
+}
+
 fn default_cache_ttl_like_counts_secs() -> u64 {
     300
 }
@@ -277,6 +294,10 @@ fn default_cache_ttl_content_validation_secs() -> u64 {
 
 fn default_cache_ttl_user_status_secs() -> u64 {
     60
+}
+
+fn default_cache_ttl_leaderboard_secs() -> u64 {
+    90
 }
 
 fn default_circuit_breaker_failure_threshold() -> u32 {
@@ -309,6 +330,14 @@ fn default_max_batch_pairs() -> usize {
 
 fn default_max_top_liked_limit() -> usize {
     50
+}
+
+fn default_user_likes_default_page_size() -> usize {
+    20
+}
+
+fn default_user_likes_max_page_size() -> usize {
+    100
 }
 
 fn default_sse_channel_capacity() -> usize {
@@ -346,9 +375,11 @@ mod tests {
             env::remove_var("REDIS_POOL_SIZE");
             env::remove_var("RATE_LIMIT_WRITE_PER_MINUTE");
             env::remove_var("RATE_LIMIT_READ_PER_MINUTE");
+            env::remove_var("RATE_LIMIT_WINDOW_SECS");
             env::remove_var("CACHE_TTL_LIKE_COUNTS_SECS");
             env::remove_var("CACHE_TTL_CONTENT_VALIDATION_SECS");
             env::remove_var("CACHE_TTL_USER_STATUS_SECS");
+            env::remove_var("CACHE_TTL_LEADERBOARD_SECS");
             env::remove_var("CIRCUIT_BREAKER_FAILURE_THRESHOLD");
             env::remove_var("CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS");
             env::remove_var("CIRCUIT_BREAKER_SUCCESS_THRESHOLD");
@@ -357,6 +388,8 @@ mod tests {
             env::remove_var("LEADERBOARD_REFRESH_INTERVAL_SECS");
             env::remove_var("MAX_BATCH_PAIRS");
             env::remove_var("MAX_TOP_LIKED_LIMIT");
+            env::remove_var("USER_LIKES_DEFAULT_PAGE_SIZE");
+            env::remove_var("USER_LIKES_MAX_PAGE_SIZE");
 
             // Set required variables
             env::set_var("DATABASE_URL", "postgres://localhost/db");
@@ -377,6 +410,13 @@ mod tests {
         assert_eq!(config.clients.connect_timeout_secs, default_http_connect_timeout_secs());
         assert_eq!(config.clients.pool_idle_timeout_secs, default_http_pool_idle_timeout_secs());
         assert_eq!(config.clients.max_retries, default_http_max_retries());
+        assert_eq!(config.limits.rate_limit_window_secs, default_rate_limit_window_secs());
+        assert_eq!(
+            config.limits.user_likes_default_page_size,
+            default_user_likes_default_page_size()
+        );
+        assert_eq!(config.limits.user_likes_max_page_size, default_user_likes_max_page_size());
+        assert_eq!(config.cache.leaderboard_ttl_secs, default_cache_ttl_leaderboard_secs());
     }
 
     #[test]

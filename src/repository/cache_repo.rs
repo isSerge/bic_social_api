@@ -130,6 +130,7 @@ pub trait CacheRepository: Send + Sync {
         content_type: Option<ContentType>,
         window_name: &str,
         items: Vec<(ContentType, Uuid, i64)>,
+        ttl_secs: u64,
     ) -> Result<(), RepoError>;
 
     /// Gets the leaderboard data for a specific content type and time window from the cache.
@@ -708,6 +709,7 @@ impl CacheRepository for RedisCacheRepository {
         content_type: Option<ContentType>,
         window_name: &str,
         items: Vec<(ContentType, Uuid, i64)>,
+        ttl_secs: u64,
     ) -> Result<(), RepoError> {
         // Return Ok(()) to indicate cache miss if cannot connect
         let mut conn = acquire_conn_or_return!(self, CacheOperationLabel::SetLeaderboard, ());
@@ -728,8 +730,7 @@ impl CacheRepository for RedisCacheRepository {
             pipe.zadd_multiple(&key, &redis_entries).ignore();
         }
 
-        // TODO: replace magic number
-        pipe.expire(&key, 90).ignore();
+        pipe.expire(&key, ttl_secs as i64).ignore();
 
         if let Err(e) = pipe.query_async::<()>(&mut conn).await {
             tracing::warn!(error = %e, key = %key, "Redis pipeline for set_leaderboard failed");
@@ -1007,7 +1008,7 @@ mod tests {
             (content_type("post"), Uuid::new_v4(), 5),
         ];
 
-        let result = cache.set_leaderboard(Some(content_type("post")), "24h", items).await;
+        let result = cache.set_leaderboard(Some(content_type("post")), "24h", items, 90).await;
 
         assert!(result.is_ok());
     }
@@ -1016,7 +1017,7 @@ mod tests {
     async fn test_set_empty_leaderboard_degrades_gracefully_when_redis_is_down() {
         let cache = RedisCacheRepository::new(broken_redis_pool(), test_metrics());
 
-        let result = cache.set_leaderboard(None, "all_time", Vec::new()).await;
+        let result = cache.set_leaderboard(None, "all_time", Vec::new(), 90).await;
 
         assert!(result.is_ok());
     }

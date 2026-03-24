@@ -26,7 +26,6 @@ use crate::{
     http::{AppState, error::ApiError, observability::AppMetrics},
 };
 
-// TODO: consider moving into separate module
 /// Custom stream wrapper to track active SSE connections for metrics purposes
 struct SseConnectionStream<S> {
     inner: Pin<Box<S>>,
@@ -195,8 +194,9 @@ pub async fn get_user_likes(
     let cursor = query.cursor.as_deref().map(PaginationCursor::try_from).transpose()?;
 
     // Validate and clamp limit parameter
-    // TODO: add max limit to config and use it here
-    let limit = query.limit.unwrap_or(20).clamp(1, 100);
+    let default_limit = state.config.limits.user_likes_default_page_size as i64;
+    let max_limit = state.config.limits.user_likes_max_page_size as i64;
+    let limit = query.limit.unwrap_or(default_limit).clamp(1, max_limit);
 
     // Fetch user likes from the like service with pagination parameters
     let mut records =

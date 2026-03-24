@@ -130,7 +130,16 @@ impl LeaderboardWorker {
         };
 
         // Update the cache with the new leaderboard data
-        if let Err(e) = self.cache.set_leaderboard(content_type.clone(), window_name, items).await {
+        if let Err(e) = self
+            .cache
+            .set_leaderboard(
+                content_type.clone(),
+                window_name,
+                items,
+                self.config.cache.leaderboard_ttl_secs,
+            )
+            .await
+        {
             tracing::warn!(
               error = %e,
               window = %window_name,
@@ -201,9 +210,14 @@ mod tests {
         let mut mock_cache = MockCacheRepository::new();
         mock_cache
             .expect_set_leaderboard()
-            .with(eq(Some(content_type.clone())), eq(window), eq(expected_redis_items))
+            .with(
+                eq(Some(content_type.clone())),
+                eq(window),
+                eq(expected_redis_items),
+                eq(AppConfig::default().cache.leaderboard_ttl_secs),
+            )
             .times(1)
-            .returning(|_, _, _| Ok(()));
+            .returning(|_, _, _, _| Ok(()));
 
         let worker = setup_worker(mock_db, mock_cache);
 
@@ -252,7 +266,7 @@ mod tests {
 
         // 2. Redis returns a connection error
         let mut mock_cache = MockCacheRepository::new();
-        mock_cache.expect_set_leaderboard().times(1).returning(|_, _, _| {
+        mock_cache.expect_set_leaderboard().times(1).returning(|_, _, _, _| {
             Err(RepoError::CachePool(deadpool_redis::PoolError::Backend(
                 Error::new(ErrorKind::ConnectionRefused, "Redis offline").into(),
             )))
@@ -284,7 +298,10 @@ mod tests {
 
         // Expect the worker to attempt to update Redis for each refresh.
         let mut mock_cache = MockCacheRepository::new();
-        mock_cache.expect_set_leaderboard().times(expected_refreshes).returning(|_, _, _| Ok(()));
+        mock_cache
+            .expect_set_leaderboard()
+            .times(expected_refreshes)
+            .returning(|_, _, _, _| Ok(()));
 
         let worker = LeaderboardWorker::new(
             Arc::new(AppConfig::default()),

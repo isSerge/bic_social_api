@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use tokio::task::JoinSet;
+use tracing::instrument;
 
 use crate::{
     config::{AppConfig, ContentTypeRegistry},
@@ -103,6 +104,7 @@ impl LeaderboardWorker {
     /// If content_type is None, it refreshes the overall leaderboard for that time window regardless of content type.
     /// If since is None, it calculates the all-time leaderboard.
     /// Handles database errors gracefully by logging and skipping the refresh cycle, and logs cache update failures as warnings since the read API can fall back to DB or stale cache in that case.
+    #[instrument(skip(self))]
     async fn refresh_single_leaderboard(
         &self,
         content_type: Option<ContentType>,

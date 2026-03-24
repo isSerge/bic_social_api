@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use tokio::sync::broadcast;
+use tracing::instrument;
 use uuid::Uuid;
 
 use crate::domain::{ContentType, LikeEvent, LikeEventKind};
@@ -20,6 +21,7 @@ impl Broadcaster {
     }
 
     /// Broadcasts a like event to all subscribers of the specific content type and content ID. If there are no subscribers, the event is dropped silently.
+    #[instrument(skip(self, event), fields(content_id = %event.content_id))]
     pub fn broadcast(&self, event: LikeEvent) {
         let key = (event.content_type.clone(), event.content_id);
         let sender = self.channels.get(&key).map(|s| s.clone()); // Get a clone of the sender to avoid holding the lock while sending

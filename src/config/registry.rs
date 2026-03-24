@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -14,19 +15,19 @@ pub enum ContentTypeRegistryError {
 /// Registry for content types and their associated base URLs, loaded from environment variables at startup.
 #[derive(Debug, Clone)]
 pub struct ContentTypeRegistry {
-    // Key is the normalized type string, Value is the base URL
-    base_urls: HashMap<String, String>,
+    // Key is the normalized type string, Value is the pre-allocated ContentType and base URL
+    base_urls: HashMap<String, (ContentType, String)>,
 }
 
 // Default impl for testing purposes only, real registry should always be created from env vars
 #[cfg(test)]
 impl Default for ContentTypeRegistry {
     fn default() -> Self {
-        let mut base_urls = HashMap::new();
-        base_urls.insert("post".to_string(), "http://mock".to_string());
-        base_urls.insert("bonus_hunter".to_string(), "http://mock".to_string());
-        base_urls.insert("top_picks".to_string(), "http://mock".to_string());
-        Self { base_urls }
+        Self::from_base_urls([
+            ("post", "http://mock"),
+            ("bonus_hunter", "http://mock"),
+            ("top_picks", "http://mock"),
+        ])
     }
 }
 
@@ -37,18 +38,26 @@ impl ContentTypeRegistry {
         for (key, value) in std::env::vars() {
             if let Some(stripped) = key.strip_prefix("CONTENT_API_") {
                 if let Some(type_str) = stripped.strip_suffix("_URL") {
-                    base_urls.insert(type_str.to_lowercase(), value);
+                    let normalized = type_str.to_lowercase();
+                    let ct = ContentType(Arc::from(normalized.clone()));
+                    base_urls.insert(normalized, (ct, value));
                 }
             }
         }
         ContentTypeRegistry { base_urls }
     }
 
-    /// Converts a raw string from an HTTP path into a validated Domain type
+    /// Converts a raw string from an HTTP path into a validated Domain type.
+    /// Avoids allocating a new String if the input
+    /// is already lowercase, and it returns a cheap Clone of a globally shared Arc<str>.
     pub fn validate(&self, raw: &str) -> Result<ContentType, ContentTypeRegistryError> {
-        let normalized = raw.to_lowercase();
-        if self.base_urls.contains_key(&normalized) {
-            Ok(ContentType(Arc::from(normalized)))
+        let is_lowercase = raw.chars().all(|c| c.is_lowercase());
+
+        let lookup_key =
+            if is_lowercase { Cow::Borrowed(raw) } else { Cow::Owned(raw.to_lowercase()) };
+
+        if let Some((ct, _)) = self.base_urls.get(lookup_key.as_ref()) {
+            Ok(ct.clone())
         } else {
             Err(ContentTypeRegistryError::UnknownContentType(raw.to_string()))
         }
@@ -56,7 +65,10 @@ impl ContentTypeRegistry {
 
     /// Used by the Content API HTTP Client
     pub fn get_url(&self, ct: &ContentType) -> &str {
-        self.base_urls.get(ct.0.as_ref()).expect("ContentType is guaranteed to exist")
+        self.base_urls
+            .get(ct.0.as_ref())
+            .map(|(_, url)| url.as_str())
+            .expect("ContentType is guaranteed to exist")
     }
 
     /// Returns a list of all registered content types
@@ -66,7 +78,7 @@ impl ContentTypeRegistry {
 
     /// Returns the unique upstream base URLs configured for content APIs.
     pub fn upstream_urls(&self) -> Vec<String> {
-        let mut urls: Vec<String> = self.base_urls.values().cloned().collect();
+        let mut urls: Vec<String> = self.base_urls.values().map(|(_, url)| url.clone()).collect();
         urls.sort();
         urls.dedup();
         urls
@@ -82,7 +94,11 @@ impl ContentTypeRegistry {
     {
         let base_urls = entries
             .into_iter()
-            .map(|(content_type, url)| (content_type.into(), url.into()))
+            .map(|(content_type, url)| {
+                let normalized = content_type.into().to_lowercase();
+                let ct = ContentType(Arc::from(normalized.clone()));
+                (normalized, (ct, url.into()))
+            })
             .collect();
 
         Self { base_urls }
@@ -130,7 +146,7 @@ mod tests {
     fn validate_is_case_insensitive() {
         let mut urls = HashMap::new();
         urls.insert("bonus_hunter".to_string(), "http://bonus:8080".to_string());
-        let registry = ContentTypeRegistry { base_urls: urls };
+        let registry = ContentTypeRegistry::from_base_urls(urls);
 
         let ct = registry.validate("BoNuS_HuNtEr").expect("mixed case input should validate");
 
@@ -152,7 +168,7 @@ mod tests {
     fn get_url_returns_registered_url() {
         let mut urls = HashMap::new();
         urls.insert("top_picks".to_string(), "http://top-picks:8083".to_string());
-        let registry = ContentTypeRegistry { base_urls: urls };
+        let registry = ContentTypeRegistry::from_base_urls(urls);
 
         let ct = ContentType(Arc::from("top_picks"));
         assert_eq!(registry.get_url(&ct), "http://top-picks:8083");
@@ -163,7 +179,7 @@ mod tests {
         let mut urls = HashMap::new();
         urls.insert("top_picks".to_string(), "http://top-picks:8083".to_string());
         urls.insert("bonus_hunter".to_string(), "http://bonus:8080".to_string());
-        let registry = ContentTypeRegistry { base_urls: urls };
+        let registry = ContentTypeRegistry::from_base_urls(urls);
 
         let content_types = registry.get_all_content_types();
         let content_type_names: Vec<_> = content_types.iter().map(|ct| ct.0.as_ref()).collect();

@@ -35,9 +35,7 @@ pub async fn setup_database_pools(config: &AppConfig) -> Result<(PgPool, PgPool)
     tracing::info!("Waiting for reader replica to replicate schema...");
     let mut attempts = 0;
     loop {
-        let result = sqlx::query("SELECT 1 FROM like_counts LIMIT 0")
-            .execute(&reader_pool)
-            .await;
+        let result = sqlx::query("SELECT 1 FROM like_counts LIMIT 0").execute(&reader_pool).await;
         if result.is_ok() {
             break;
         }

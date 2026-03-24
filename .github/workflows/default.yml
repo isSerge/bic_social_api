@@ -10,6 +10,20 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: social
+          POSTGRES_PASSWORD: social_password
+          POSTGRES_DB: social_api
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U social -d social_api"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -32,6 +46,9 @@ jobs:
         run: cargo clippy --workspace --locked -- -D warnings
 
       # SQLX_OFFLINE is already set to "true" in .cargo/config.toml so no live
-      # database is needed. Tests use mocks; --test-threads default (num CPUs) is fine.
+      # database is needed for compilation. Integration tests create isolated
+      # per-test databases on the service container started above.
       - name: Run tests
         run: cargo test --workspace --locked
+        env:
+          TEST_DATABASE_URL: postgres://social:social_password@localhost:55432/social_api

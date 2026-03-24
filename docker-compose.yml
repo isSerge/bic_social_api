@@ -3,14 +3,15 @@ services:
   # ── Infrastructure ───────────────────────────────────────────────────────────
 
   postgres-primary:
-    image: bitnami/postgresql:16
+    image: bitnami/postgresql:latest
     environment:
-      POSTGRESQL_REPLICATION_MODE: master
-      POSTGRESQL_REPLICATION_USER: replicator
-      POSTGRESQL_REPLICATION_PASSWORD: replicator_password
-      POSTGRESQL_USERNAME: social
-      POSTGRESQL_PASSWORD: social_password
-      POSTGRESQL_DATABASE: social_api
+      - POSTGRESQL_REPLICATION_MODE=master
+      - POSTGRESQL_REPLICATION_USER=replicator
+      - POSTGRESQL_REPLICATION_PASSWORD=replicator_password
+      - POSTGRESQL_USERNAME=social
+      - POSTGRESQL_PASSWORD=social_password
+      - POSTGRESQL_DATABASE=social_api
+      - ALLOW_EMPTY_PASSWORD=yes
     volumes:
       - postgres-primary-data:/bitnami/postgresql
     healthcheck:
@@ -21,16 +22,17 @@ services:
       start_period: 10s
 
   postgres-replica:
-    image: bitnami/postgresql:16
+    image: bitnami/postgresql:latest
     environment:
-      POSTGRESQL_REPLICATION_MODE: slave
-      POSTGRESQL_MASTER_HOST: postgres-primary
-      POSTGRESQL_MASTER_PORT_NUMBER: 5432
-      POSTGRESQL_REPLICATION_USER: replicator
-      POSTGRESQL_REPLICATION_PASSWORD: replicator_password
-      POSTGRESQL_USERNAME: social
-      POSTGRESQL_PASSWORD: social_password
-      POSTGRESQL_DATABASE: social_api
+      - POSTGRESQL_REPLICATION_MODE=slave
+      - POSTGRESQL_MASTER_HOST=postgres-primary
+      - POSTGRESQL_MASTER_PORT_NUMBER=5432
+      - POSTGRESQL_REPLICATION_USER=replicator
+      - POSTGRESQL_REPLICATION_PASSWORD=replicator_password
+      - POSTGRESQL_USERNAME=social
+      - POSTGRESQL_PASSWORD=social_password
+      - POSTGRESQL_DATABASE=social_api
+      - ALLOW_EMPTY_PASSWORD=yes
     volumes:
       - postgres-replica-data:/bitnami/postgresql
     depends_on:

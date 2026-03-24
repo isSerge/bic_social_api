@@ -31,6 +31,30 @@ pub async fn setup_database_pools(config: &AppConfig) -> Result<(PgPool, PgPool)
     tracing::info!("Running pending database migrations...");
     sqlx::migrate!("./migrations").run(&writer_pool).await?;
 
+    // 3. Wait for the Reader (replica) to catch up with the schema
+    tracing::info!("Waiting for reader replica to replicate schema...");
+    let mut attempts = 0;
+    loop {
+        let result = sqlx::query("SELECT 1 FROM like_counts LIMIT 0")
+            .execute(&reader_pool)
+            .await;
+        if result.is_ok() {
+            break;
+        }
+        attempts += 1;
+        if attempts >= 30 {
+            tracing::error!("Reader replica did not replicate schema after 30 attempts");
+            return Err(sqlx::Error::Protocol(
+                "Reader replica schema not ready after timeout".into(),
+            ));
+        }
+        tracing::warn!(
+            "Reader replica schema not ready yet (attempt {}/30), retrying...",
+            attempts
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
     tracing::info!("Database pools initialized and migrated successfully.");
 
     Ok((writer_pool, reader_pool))

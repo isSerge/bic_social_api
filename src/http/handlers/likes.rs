@@ -114,7 +114,7 @@ pub async fn unlike(
 /// Count response DTO
 #[derive(Serialize)]
 pub struct CountResponse {
-    content_type: String,
+    content_type: Arc<str>, // Use Arc<str> to avoid unnecessary cloning
     content_id: Uuid,
     count: i64,
 }
@@ -126,9 +126,9 @@ pub async fn get_count(
 ) -> Result<impl IntoResponse, ApiError> {
     let content_type = state.content_type_registry.validate(&raw_type)?;
 
-    let count = state.like_service.get_count(content_type, content_id).await?;
+    let count = state.like_service.get_count(content_type.clone(), content_id).await?;
 
-    let response = CountResponse { content_type: raw_type, content_id, count };
+    let response = CountResponse { content_type: content_type.0, content_id, count };
 
     Ok((StatusCode::OK, Json(response)))
 }
@@ -166,7 +166,7 @@ pub struct UserLikesQuery {
 /// User likes item DTO
 #[derive(Serialize)]
 pub struct UserLikesItem {
-    content_type: String,
+    content_type: Arc<str>, // Use Arc<str> to avoid unnecessary cloning
     content_id: Uuid,
     liked_at: DateTime<Utc>,
 }
@@ -217,7 +217,7 @@ pub async fn get_user_likes(
     let items: Vec<UserLikesItem> = records
         .into_iter()
         .map(|r| UserLikesItem {
-            content_type: r.content_type.0.to_string(),
+            content_type: r.content_type.0,
             content_id: r.content_id,
             liked_at: r.created_at,
         })

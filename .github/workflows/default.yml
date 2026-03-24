@@ -1,0 +1,36 @@
+name: Main CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml in the repo root pins the channel, profile, and
+      # components (rustfmt, clippy). dtolnay/rust-toolchain reads it automatically.
+      - uses: dtolnay/rust-toolchain@v1
+
+      # Cache ~/.cargo/registry, ~/.cargo/git, and target/ keyed on Cargo.lock.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check code formatting
+        run: cargo fmt -- --check
+
+      # --locked ensures CI uses exactly the dependency versions in Cargo.lock.
+      - name: Run cargo check
+        run: cargo check --workspace --locked
+
+      - name: Run cargo clippy
+        run: cargo clippy --workspace --locked -- -D warnings
+
+      # SQLX_OFFLINE is already set to "true" in .cargo/config.toml so no live
+      # database is needed. Tests use mocks; --test-threads default (num CPUs) is fine.
+      - name: Run tests
+        run: cargo test --workspace --locked

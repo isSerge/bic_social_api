@@ -261,7 +261,9 @@ pub struct BatchCountResult {
     count: i64,
 }
 
-/// POST /v1/likes/batch/counts
+/// POST /v1/likes/batch/counts (public — no authentication required)
+/// Uses POST rather than GET to carry an arbitrarily large JSON body of content IDs.
+/// Rate-limited per IP under the write bucket, separate from the read quota.
 pub async fn batch_counts(
     State(state): State<AppState>,
     Json(payload): Json<BatchRequest>,

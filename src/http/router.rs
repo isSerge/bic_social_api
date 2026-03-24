@@ -12,7 +12,9 @@ use super::{AppState, handlers, middlewares};
 
 /// Constructs the main application router with all routes and middleware.
 pub fn create_router(state: AppState) -> Router {
-    // Protected Like routes that require authentication
+    // Protected Like routes that require authentication.
+    // All mutating routes (like, unlike, batch/statuses) live here so the rate limiter
+    // can always key writes by authenticated user ID.
     let protected = Router::new()
         .route("/v1/likes", post(handlers::likes::like))
         .route("/v1/likes/{content_type}/{content_id}", delete(handlers::likes::unlike))
@@ -28,7 +30,10 @@ pub fn create_router(state: AppState) -> Router {
                 .layer(middleware::from_fn_with_state(state.clone(), middlewares::rate_limiter)),
         );
 
-    // Public Like routes that do not require authentication
+    // Public Like routes — no auth required.
+    // GET routes are keyed by IP (read bucket). batch/counts uses POST to carry a large JSON
+    // body of content IDs but is semantically a read; it is rate-limited per IP under the
+    // write bucket so it cannot interfere with the read quota (or vice versa).
     let public = Router::new()
         .route("/v1/likes/{content_type}/{content_id}/count", get(handlers::likes::get_count))
         .route("/v1/likes/batch/counts", post(handlers::likes::batch_counts))

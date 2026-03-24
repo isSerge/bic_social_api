@@ -19,7 +19,8 @@ const RATE_LIMIT_REMAINING_HEADER: HeaderName = HeaderName::from_static("x-ratel
 const RATE_LIMIT_RESET_HEADER: HeaderName = HeaderName::from_static("x-ratelimit-reset");
 
 /// Middleware to enforce rate limits based on IP for reads and User ID for writes.
-/// Reads (GET) are limited per IP, while writes (POST, PUT, DELETE, PATCH) are limited per authenticated user.
+/// Authenticated writes (POST, PUT, DELETE, PATCH) are limited per user ID.
+/// Public write endpoints without a user ID in extensions fall back to IP-based limiting.
 pub async fn rate_limiter(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -30,10 +31,23 @@ pub async fn rate_limiter(
     let is_write_method =
         matches!(req.method(), &Method::POST | &Method::DELETE | &Method::PUT | &Method::PATCH);
 
-    // Determine the key and limit based on request type.
+    // Determine the rate-limit key and bucket.
+    //
+    // Three cases:
+    //   1. Authenticated write (user ID in extensions): keyed by user ID, write_per_minute.
+    //      All mutating routes (like, unlike, batch/statuses) run behind require_auth so this
+    //      is the normal path for POST/DELETE.
+    //   2. Unauthenticated write (no user ID): keyed by IP under a *separate* write bucket,
+    //      also write_per_minute. This covers public POST endpoints (e.g. batch/counts) that
+    //      use a write method for body-size reasons but require no auth. A dedicated bucket
+    //      prevents this traffic from exhausting the read quota or being exhausted by reads.
+    //   3. Read (GET/HEAD/OPTIONS): keyed by IP, read_per_minute.
     let (key, limit) = if is_write_method {
-        let user_id = req.extensions().get::<Uuid>().ok_or(ApiError::Unauthorized)?; // Unauthorized should never happen if routing is correct
-        (format!("rate:write:user:{user_id}"), state.config.limits.write_per_minute)
+        if let Some(user_id) = req.extensions().get::<Uuid>() {
+            (format!("rate:write:user:{user_id}"), state.config.limits.write_per_minute)
+        } else {
+            (format!("rate:write:ip:{}", addr.ip()), state.config.limits.write_per_minute)
+        }
     } else {
         // Public reads - use IP address as key
         let key = format!("rate:read:ip:{}", addr.ip());
@@ -344,24 +358,37 @@ mod tests {
         assert!(rate_limit_reset_value(&response) >= before);
     }
 
+    /// An unauthenticated write (public POST endpoint such as batch/counts) falls back to a
+    /// dedicated IP-based write bucket so it cannot drain the read quota, and reads cannot
+    /// drain the write quota for that IP.
     #[tokio::test]
-    async fn test_write_request_without_auth_fails_fast() {
+    async fn test_public_write_without_auth_uses_write_ip_bucket() {
         let addr = test_socket_addr();
+        let expected_key = format!("rate:write:ip:{}", addr.ip());
+        let limit = AppConfig::default().limits.write_per_minute;
 
         let mut mock_cache = MockCacheRepository::new();
-        mock_cache.expect_check_rate_limit().times(0);
+        mock_cache
+            .expect_check_rate_limit()
+            .with(
+                eq(expected_key),
+                eq(limit),
+                eq(AppConfig::default().limits.rate_limit_window_secs),
+            )
+            .times(1)
+            .returning(|_, _, _| {
+                Ok(RateLimitStatus { allowed: true, current_count: 1, retry_after_secs: 60 })
+            });
 
         let app = app_for_test(Arc::new(mock_cache));
 
-        let mut request = Request::builder()
-            .method(http::Method::DELETE)
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let mut request =
+            Request::builder().method(http::Method::POST).uri("/test").body(Body::empty()).unwrap();
         request.extensions_mut().insert(ConnectInfo(addr));
 
         let response = app.oneshot(request).await.unwrap();
 
-        assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(response.headers().get(RATE_LIMIT_LIMIT_HEADER).unwrap(), &limit.to_string());
     }
 }

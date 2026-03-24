@@ -11,6 +11,8 @@ mod service;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use deadpool_redis::Runtime;
+use reqwest_middleware::ClientBuilder;
+use reqwest_retry::{Jitter, RetryTransientMiddleware, policies::ExponentialBackoff};
 use tokio::{net::TcpListener, signal, sync::watch, task::JoinHandle};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -74,8 +76,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let metrics = Arc::new(AppMetrics::new());
     let cache_repo = Arc::new(RedisCacheRepository::new(redis_pool.clone(), Arc::clone(&metrics)));
 
-    // Initialize HTTP client and Profile API client
-    let http_client = reqwest::Client::new();
+    // Initialize HTTP clients for external dependencies.
+    let reqwest_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(config.clients.timeout_secs))
+        .connect_timeout(Duration::from_secs(config.clients.connect_timeout_secs))
+        .pool_idle_timeout(Duration::from_secs(config.clients.pool_idle_timeout_secs))
+        .build()
+        .expect("Failed to build HTTP client");
+    let retry_policy = ExponentialBackoff::builder()
+        .jitter(Jitter::Full)
+        .build_with_max_retries(config.clients.max_retries);
+    let http_client = ClientBuilder::new(reqwest_client.clone())
+        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+        .build();
+
     let content_client = Arc::new(HttpContentClient::new(
         http_client.clone(),
         Arc::clone(&content_type_registry),
@@ -90,7 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         reader_pool.clone(),
         i64::from(config.database.max_connections) * 2,
         redis_pool,
-        http_client.clone(),
+        reqwest_client.clone(),
         Arc::clone(&content_type_registry),
         Arc::clone(&metrics),
     ));

@@ -59,6 +59,17 @@ pub struct ServerConfig {
 pub struct ClientsConfig {
     #[serde(rename = "profile_api_url")]
     pub profile_url: String,
+    #[serde(rename = "http_timeout_secs", default = "default_http_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(rename = "http_connect_timeout_secs", default = "default_http_connect_timeout_secs")]
+    pub connect_timeout_secs: u64,
+    #[serde(
+        rename = "http_pool_idle_timeout_secs",
+        default = "default_http_pool_idle_timeout_secs"
+    )]
+    pub pool_idle_timeout_secs: u64,
+    #[serde(rename = "http_max_retries", default = "default_http_max_retries")]
+    pub max_retries: u32,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -180,7 +191,13 @@ impl Default for AppConfig {
                 shutdown_timeout_secs: default_shutdown_timeout_secs(),
                 sse_channel_capacity: default_sse_channel_capacity(),
             },
-            clients: ClientsConfig { profile_url: "http://localhost:8082".to_string() },
+            clients: ClientsConfig {
+                profile_url: "http://localhost:8082".to_string(),
+                timeout_secs: default_http_timeout_secs(),
+                connect_timeout_secs: default_http_connect_timeout_secs(),
+                pool_idle_timeout_secs: default_http_pool_idle_timeout_secs(),
+                max_retries: default_http_max_retries(),
+            },
             cache: CacheConfig {
                 like_counts_ttl_secs: default_cache_ttl_like_counts_secs(),
                 content_validation_ttl_secs: default_cache_ttl_content_validation_secs(),
@@ -224,6 +241,22 @@ fn default_db_acquire_timeout_secs() -> u64 {
 
 fn default_redis_pool_size() -> usize {
     10
+}
+
+fn default_http_timeout_secs() -> u64 {
+    3
+}
+
+fn default_http_connect_timeout_secs() -> u64 {
+    1
+}
+
+fn default_http_pool_idle_timeout_secs() -> u64 {
+    90
+}
+
+fn default_http_max_retries() -> u32 {
+    3
 }
 
 fn default_rate_limit_write_per_minute() -> u32 {
@@ -301,6 +334,10 @@ mod tests {
             env::remove_var("HTTP_PORT");
             env::remove_var("CONTENT_API_URL");
             env::remove_var("PROFILE_API_URL");
+            env::remove_var("HTTP_TIMEOUT_SECS");
+            env::remove_var("HTTP_CONNECT_TIMEOUT_SECS");
+            env::remove_var("HTTP_POOL_IDLE_TIMEOUT_SECS");
+            env::remove_var("HTTP_MAX_RETRIES");
             env::remove_var("LOG_LEVEL");
             env::remove_var("RUST_LOG");
             env::remove_var("DB_MAX_CONNECTIONS");
@@ -336,6 +373,10 @@ mod tests {
         assert_eq!(config.app.log_level, default_log_level());
         assert_eq!(config.database.max_connections, default_db_max_connections());
         assert_eq!(config.server.port, 8080);
+        assert_eq!(config.clients.timeout_secs, default_http_timeout_secs());
+        assert_eq!(config.clients.connect_timeout_secs, default_http_connect_timeout_secs());
+        assert_eq!(config.clients.pool_idle_timeout_secs, default_http_pool_idle_timeout_secs());
+        assert_eq!(config.clients.max_retries, default_http_max_retries());
     }
 
     #[test]
@@ -348,6 +389,10 @@ mod tests {
             env::set_var("HTTP_PORT", "9090");
             env::set_var("CONTENT_API_URL", "http://localhost/content");
             env::set_var("PROFILE_API_URL", "http://localhost/profile");
+            env::set_var("HTTP_TIMEOUT_SECS", "7");
+            env::set_var("HTTP_CONNECT_TIMEOUT_SECS", "2");
+            env::set_var("HTTP_POOL_IDLE_TIMEOUT_SECS", "45");
+            env::set_var("HTTP_MAX_RETRIES", "5");
 
             env::set_var("LOG_LEVEL", "debug");
             env::set_var("DB_MAX_CONNECTIONS", "50");
@@ -358,5 +403,9 @@ mod tests {
         assert_eq!(config.server.port, 9090);
         assert_eq!(config.app.log_level, "debug");
         assert_eq!(config.database.max_connections, 50);
+        assert_eq!(config.clients.timeout_secs, 7);
+        assert_eq!(config.clients.connect_timeout_secs, 2);
+        assert_eq!(config.clients.pool_idle_timeout_secs, 45);
+        assert_eq!(config.clients.max_retries, 5);
     }
 }

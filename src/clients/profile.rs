@@ -5,6 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use axum::http;
 use reqwest::StatusCode;
+use reqwest_middleware::{ClientWithMiddleware, Error as MiddlewareError};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -28,7 +29,7 @@ struct ProfileValidationResponse {
 
 /// Client for interacting with the Profile API, specifically for token validation.
 pub struct ProfileClient {
-    http_client: reqwest::Client,
+    http_client: ClientWithMiddleware,
     base_url: String,
     breaker: CircuitBreaker,
     metrics: Arc<AppMetrics>,
@@ -45,7 +46,7 @@ pub trait ProfileValidationClient: Send + Sync {
 
 impl ProfileClient {
     pub fn new(
-        http_client: reqwest::Client,
+        http_client: ClientWithMiddleware,
         base_url: impl Into<String>,
         config: CircuitBreakerConfig,
         metrics: Arc<AppMetrics>,
@@ -77,7 +78,12 @@ impl ProfileClient {
                     ExternalCallStatusLabel::Error,
                     started_at,
                 );
-                return Err(ClientError::Http(error));
+                return Err(match error {
+                    MiddlewareError::Reqwest(error) => ClientError::Http(error),
+                    MiddlewareError::Middleware(error) => {
+                        ClientError::DependencyUnavailable(error.to_string())
+                    }
+                });
             }
         };
 
@@ -138,12 +144,9 @@ impl ProfileValidationClient for ProfileClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest_middleware::ClientBuilder;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    fn test_metrics() -> Arc<AppMetrics> {
-        Arc::new(AppMetrics::new())
-    }
 
     #[tokio::test]
     async fn validate_token_success() {
@@ -165,10 +168,10 @@ mod tests {
             .await;
 
         let client = ProfileClient::new(
-            reqwest::Client::new(),
+            ClientBuilder::new(reqwest::Client::new()).build(),
             mock_server.uri(),
             CircuitBreakerConfig::default(),
-            test_metrics(),
+            Arc::new(AppMetrics::new()),
         );
 
         // Act & Assert
@@ -193,10 +196,10 @@ mod tests {
             .await;
 
         let client = ProfileClient::new(
-            reqwest::Client::new(),
+            ClientBuilder::new(reqwest::Client::new()).build(),
             mock_server.uri(),
             CircuitBreakerConfig::default(),
-            test_metrics(),
+            Arc::new(AppMetrics::new()),
         );
 
         let result = client.validate_token("invalid_token").await;
@@ -216,10 +219,10 @@ mod tests {
             .await;
 
         let client = ProfileClient::new(
-            reqwest::Client::new(),
+            ClientBuilder::new(reqwest::Client::new()).build(),
             mock_server.uri(),
             CircuitBreakerConfig::default(),
-            test_metrics(),
+            Arc::new(AppMetrics::new()),
         );
 
         let result = client.validate_token("any_token").await;
@@ -241,10 +244,10 @@ mod tests {
             .await;
 
         let client = ProfileClient::new(
-            reqwest::Client::new(),
+            ClientBuilder::new(reqwest::Client::new()).build(),
             mock_server.uri(),
             CircuitBreakerConfig::default(),
-            test_metrics(),
+            Arc::new(AppMetrics::new()),
         );
         let result = client.validate_token("valid_token").await;
 
@@ -267,8 +270,12 @@ mod tests {
             success_threshold: 1,
         };
 
-        let client =
-            ProfileClient::new(reqwest::Client::new(), mock_server.uri(), config, test_metrics());
+        let client = ProfileClient::new(
+            ClientBuilder::new(reqwest::Client::new()).build(),
+            mock_server.uri(),
+            config,
+            Arc::new(AppMetrics::new()),
+        );
 
         let result1 = client.validate_token("valid_token").await;
         assert!(matches!(result1.unwrap_err(), ClientError::DependencyUnavailable(_)));
@@ -295,8 +302,12 @@ mod tests {
             success_threshold: 1,
         };
 
-        let client =
-            ProfileClient::new(reqwest::Client::new(), mock_server.uri(), config, test_metrics());
+        let client = ProfileClient::new(
+            ClientBuilder::new(reqwest::Client::new()).build(),
+            mock_server.uri(),
+            config,
+            Arc::new(AppMetrics::new()),
+        );
 
         let result1 = client.validate_token("invalid_token").await;
         assert!(matches!(result1.unwrap_err(), ClientError::NotFound));

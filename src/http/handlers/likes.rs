@@ -461,6 +461,7 @@ mod tests {
     };
     use chrono::TimeZone;
     use mockall::predicate::eq;
+    use reqwest_middleware::ClientBuilder;
     use tower::ServiceExt;
 
     use crate::{
@@ -500,7 +501,7 @@ mod tests {
             Arc::clone(&metrics),
         ));
         let profile_client = Arc::new(ProfileClient::new(
-            reqwest::Client::new(),
+            test_http_client(),
             "http://mock-profile",
             config.circuit_breaker,
             Arc::clone(&metrics),
@@ -543,6 +544,10 @@ mod tests {
     // Helper to create a dummy ContentType
     fn content_type(raw: &str) -> ContentType {
         ContentType(Arc::from(raw.to_string()))
+    }
+
+    fn test_http_client() -> reqwest_middleware::ClientWithMiddleware {
+        ClientBuilder::new(reqwest::Client::new()).build()
     }
 
     const CACHE_TTL_LIKE_COUNTS_SECS: u64 = 300;

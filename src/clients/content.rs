@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use reqwest::StatusCode;
+use reqwest_middleware::{ClientWithMiddleware, Error as MiddlewareError};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -18,7 +19,7 @@ use crate::{
 
 /// Client for interacting with the Content API, specifically for content existence validation.
 pub struct HttpContentClient {
-    http_client: reqwest::Client,
+    http_client: ClientWithMiddleware,
     registry: Arc<ContentTypeRegistry>,
     breaker: CircuitBreaker,
     metrics: Arc<AppMetrics>,
@@ -45,7 +46,7 @@ pub trait ContentValidationClient: Send + Sync {
 
 impl HttpContentClient {
     pub fn new(
-        http_client: reqwest::Client,
+        http_client: ClientWithMiddleware,
         registry: Arc<ContentTypeRegistry>,
         config: CircuitBreakerConfig,
         metrics: Arc<AppMetrics>,
@@ -78,7 +79,12 @@ impl HttpContentClient {
                     ExternalCallStatusLabel::Error,
                     started_at,
                 );
-                return Err(ClientError::Http(error));
+                return Err(match error {
+                    MiddlewareError::Reqwest(error) => ClientError::Http(error),
+                    MiddlewareError::Middleware(error) => {
+                        ClientError::DependencyUnavailable(error.to_string())
+                    }
+                });
             }
         };
 
@@ -143,12 +149,9 @@ impl ContentValidationClient for HttpContentClient {
 mod tests {
     use super::*;
     use crate::http::observability::AppMetrics;
+    use reqwest_middleware::ClientBuilder;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    fn test_metrics() -> Arc<AppMetrics> {
-        Arc::new(AppMetrics::new())
-    }
 
     // TODO: re-use
     fn content_type(raw: &str) -> ContentType {
@@ -188,10 +191,10 @@ mod tests {
         let registry = registry_for_mock_server(&mock_server, ["post"]);
 
         let client = HttpContentClient::new(
-            reqwest::Client::new(),
+            ClientBuilder::new(reqwest::Client::new()).build(),
             registry,
             CircuitBreakerConfig::default(),
-            test_metrics(),
+            Arc::new(AppMetrics::new()),
         );
         let result = client.validate_content(content_type, content_id).await;
 
@@ -213,10 +216,10 @@ mod tests {
 
         let registry = registry_for_mock_server(&mock_server, ["post"]);
         let client = HttpContentClient::new(
-            reqwest::Client::new(),
+            ClientBuilder::new(reqwest::Client::new()).build(),
             registry,
             CircuitBreakerConfig::default(),
-            test_metrics(),
+            Arc::new(AppMetrics::new()),
         );
         let content_type = content_type("post");
 
@@ -238,10 +241,10 @@ mod tests {
 
         let registry = registry_for_mock_server(&mock_server, ["post"]);
         let client = HttpContentClient::new(
-            reqwest::Client::new(),
+            ClientBuilder::new(reqwest::Client::new()).build(),
             registry,
             CircuitBreakerConfig::default(),
-            test_metrics(),
+            Arc::new(AppMetrics::new()),
         );
         let content_type = content_type("post");
         let result = client.validate_content(content_type, content_id).await;
@@ -262,10 +265,10 @@ mod tests {
 
         let registry = registry_for_mock_server(&mock_server, ["post"]);
         let client = HttpContentClient::new(
-            reqwest::Client::new(),
+            ClientBuilder::new(reqwest::Client::new()).build(),
             registry,
             CircuitBreakerConfig::default(),
-            test_metrics(),
+            Arc::new(AppMetrics::new()),
         );
         let content_type = content_type("post");
         let result = client.validate_content(content_type, content_id).await;
@@ -286,10 +289,10 @@ mod tests {
 
         let registry = registry_for_mock_server(&mock_server, ["invalid_type"]);
         let client = HttpContentClient::new(
-            reqwest::Client::new(),
+            ClientBuilder::new(reqwest::Client::new()).build(),
             registry,
             CircuitBreakerConfig::default(),
-            test_metrics(),
+            Arc::new(AppMetrics::new()),
         );
         let content_type = content_type("invalid_type");
         let result = client.validate_content(content_type, content_id).await;
@@ -316,8 +319,12 @@ mod tests {
         };
 
         let registry = registry_for_mock_server(&mock_server, ["post"]);
-        let client =
-            HttpContentClient::new(reqwest::Client::new(), registry, config, test_metrics());
+        let client = HttpContentClient::new(
+            ClientBuilder::new(reqwest::Client::new()).build(),
+            registry,
+            config,
+            Arc::new(AppMetrics::new()),
+        );
 
         // Call 1: Fails, but circuit remains Closed
         let content_type = content_type("post");
@@ -353,8 +360,12 @@ mod tests {
         };
 
         let registry = registry_for_mock_server(&mock_server, ["post"]);
-        let client =
-            HttpContentClient::new(reqwest::Client::new(), registry, config, test_metrics());
+        let client = HttpContentClient::new(
+            ClientBuilder::new(reqwest::Client::new()).build(),
+            registry,
+            config,
+            Arc::new(AppMetrics::new()),
+        );
 
         // Call 1: Returns 404. This is a business logic error, NOT a network failure.
         let content_type = content_type("post");

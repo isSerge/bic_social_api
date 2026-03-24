@@ -96,7 +96,7 @@ impl RealReadinessProbe {
         E: std::fmt::Display,
     {
         if let Err(error) = result {
-            report.record_failure(dependency, format!("{}: {}", failure_prefix, error));
+            report.record_failure(dependency, format!("{failure_prefix}: {error}"));
         }
     }
 
@@ -156,7 +156,7 @@ impl RealReadinessProbe {
                     ExternalCallStatusLabel::Error,
                     started_at,
                 );
-                ContentApiProbeResult::Unhealthy(format!("{} request failed: {}", probe_url, error))
+                ContentApiProbeResult::Unhealthy(format!("{probe_url} request failed: {error}"))
             }
         }
     }
@@ -219,7 +219,7 @@ impl ReadinessProbe for RealReadinessProbe {
                 Ok(ContentApiProbeResult::Healthy) => any_content_api_healthy = true,
                 Ok(ContentApiProbeResult::Unhealthy(error)) => upstream_errors.push(error),
                 Err(error) => {
-                    upstream_errors.push(format!("content API probe task failed: {}", error));
+                    upstream_errors.push(format!("content API probe task failed: {error}"));
                 }
             }
         }

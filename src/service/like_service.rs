@@ -46,6 +46,7 @@ impl LikeService {
     }
 
     /// Helper function to apply side effects after like/unlike operations, such as updating caches, recording metrics, and broadcasting events. This centralizes the logic for these side effects to ensure consistency across like and unlike operations.
+    #[allow(clippy::too_many_arguments)]
     async fn apply_write_side_effects(
         &self,
         user_id: Uuid,
@@ -609,7 +610,7 @@ mod tests {
         // Assert
         assert!(result.is_ok());
         let (was_liked, count) = result.unwrap();
-        assert_eq!(was_liked, true);
+        assert!(was_liked);
         assert_eq!(count, like_count_after);
     }
 
@@ -653,7 +654,7 @@ mod tests {
         // Assert
         assert!(result.is_ok());
         let (was_liked, _) = result.unwrap();
-        assert_eq!(was_liked, false);
+        assert!(!was_liked);
     }
 
     #[tokio::test]

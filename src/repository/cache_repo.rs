@@ -176,7 +176,7 @@ impl RedisCacheRepository {
 
     /// Helper to consistently format the token cache key
     fn token_key(token: &str) -> String {
-        format!("likes:token:{}", token)
+        format!("likes:token:{token}")
     }
 
     /// Helper function to generate Redis keys for user-specific like status.
@@ -193,7 +193,7 @@ impl RedisCacheRepository {
     fn leaderboard_key(content_type: Option<ContentType>, window_name: &str) -> String {
         match content_type {
             Some(ct) => format!("leaderboard:{}:{}", ct.0, window_name),
-            None => format!("leaderboard:all:{}", window_name),
+            None => format!("leaderboard:all:{window_name}"),
         }
     }
 

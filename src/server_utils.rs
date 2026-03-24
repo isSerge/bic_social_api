@@ -13,13 +13,13 @@ pub async fn serve_mock(app: Router, default_port: u16, service_name: &str) {
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .unwrap_or_else(|e| panic!("failed to bind listener for {}: {}", service_name, e));
+        .unwrap_or_else(|e| panic!("failed to bind listener for {service_name}: {e}"));
 
     tracing::info!("{} listening on {}", service_name, addr);
 
     axum::serve(listener, app)
         .await
-        .unwrap_or_else(|e| panic!("{} server failed: {}", service_name, e));
+        .unwrap_or_else(|e| panic!("{service_name} server failed: {e}"));
 }
 
 /// Spawns an Axum router on a random ephemeral port and returns the base URL.
@@ -36,5 +36,5 @@ pub async fn spawn_test_server(app: Router) -> String {
         axum::serve(listener, app).await.expect("Test server failed to run");
     });
 
-    format!("http://{}", addr)
+    format!("http://{addr}")
 }

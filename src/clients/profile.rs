@@ -68,7 +68,7 @@ impl ProfileClient {
         let response = match self
             .http_client
             .get(&url)
-            .header(http::header::AUTHORIZATION, format!("Bearer {}", token))
+            .header(http::header::AUTHORIZATION, format!("Bearer {token}"))
             .send()
             .await
         {
@@ -156,7 +156,7 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         let expected_uuid = Uuid::new_v4();
-        let mock_user_id = format!("usr_{}", expected_uuid);
+        let mock_user_id = format!("usr_{expected_uuid}");
 
         // Expected request and mock response for a valid token
         Mock::given(method("GET"))

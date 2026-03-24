@@ -399,7 +399,7 @@ impl AppMetrics {
         encoder.encode(&metric_families, &mut buffer)?;
 
         String::from_utf8(buffer).map_err(|error| {
-            prometheus::Error::Msg(format!("metrics output was not valid UTF-8: {}", error))
+            prometheus::Error::Msg(format!("metrics output was not valid UTF-8: {error}"))
         })
     }
 }

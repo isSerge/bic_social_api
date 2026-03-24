@@ -120,7 +120,7 @@ mod tests {
         let client = reqwest::Client::new();
 
         let response = client
-            .get(format!("{}/v1/auth/validate", base))
+            .get(format!("{base}/v1/auth/validate"))
             .header("Authorization", "Bearer tok_user_1")
             .send()
             .await
@@ -140,7 +140,7 @@ mod tests {
         let client = reqwest::Client::new();
 
         let response = client
-            .get(format!("{}/v1/auth/validate", base))
+            .get(format!("{base}/v1/auth/validate"))
             .header("Authorization", "Bearer bad_token")
             .send()
             .await
@@ -159,7 +159,7 @@ mod tests {
         let client = reqwest::Client::new();
 
         let response =
-            client.get(format!("{}/v1/auth/validate", base)).send().await.expect("request failed");
+            client.get(format!("{base}/v1/auth/validate")).send().await.expect("request failed");
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
@@ -170,7 +170,7 @@ mod tests {
         let client = reqwest::Client::new();
 
         let response = client
-            .get(format!("{}/v1/auth/validate", base))
+            .get(format!("{base}/v1/auth/validate"))
             .header("Authorization", "tok_user_1") // Missing "Bearer "
             .send()
             .await

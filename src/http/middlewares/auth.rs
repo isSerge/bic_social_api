@@ -119,12 +119,10 @@ mod tests {
             (StatusCode::OK, user_id.to_string())
         }
 
-        let app = Router::new()
+        Router::new()
             .route("/protected", get(dummy_handler))
             .layer(middleware::from_fn_with_state(state.clone(), require_auth))
-            .with_state(state);
-
-        app
+            .with_state(state)
     }
 
     #[tokio::test]

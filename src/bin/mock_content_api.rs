@@ -62,7 +62,7 @@ async fn get_content(
 
     let payload = ContentResponse {
         id: content_id,
-        title: format!("Mock {} content", normalized_type),
+        title: format!("Mock {normalized_type} content"),
         content_type: normalized_type,
     };
 
@@ -141,7 +141,7 @@ mod tests {
 
         // Updated to use the smoke test ID
         let response = client
-            .get(format!("{}/v1/post/731b0395-4888-4822-b516-05b4b7bf2089", base))
+            .get(format!("{base}/v1/post/731b0395-4888-4822-b516-05b4b7bf2089"))
             .send()
             .await
             .expect("request failed");
@@ -155,7 +155,7 @@ mod tests {
         let client = reqwest::Client::new();
 
         let response = client
-            .get(format!("{}/v1/post/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", base))
+            .get(format!("{base}/v1/post/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
             .send()
             .await
             .expect("request failed");
@@ -169,7 +169,7 @@ mod tests {
         let client = reqwest::Client::new();
 
         let response = client
-            .get(format!("{}/v1/invalid_type/731b0395-4888-4822-b516-05b4b7bf2089", base))
+            .get(format!("{base}/v1/invalid_type/731b0395-4888-4822-b516-05b4b7bf2089"))
             .send()
             .await
             .expect("request failed");
@@ -182,7 +182,7 @@ mod tests {
         let base = spawn_test_server().await;
         let client = reqwest::Client::new();
 
-        let response = client.get(format!("{}/health", base)).send().await.expect("request failed");
+        let response = client.get(format!("{base}/health")).send().await.expect("request failed");
 
         assert_eq!(response.status(), StatusCode::OK);
     }

@@ -172,7 +172,7 @@ mod tests {
         let content_type = ContentType::from("post");
 
         Mock::given(method("GET"))
-            .and(path(format!("/v1/post/{}", content_id)))
+            .and(path(format!("/v1/post/{content_id}")))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "items": [
                     {
@@ -204,7 +204,7 @@ mod tests {
         let content_id = Uuid::new_v4();
 
         Mock::given(method("GET"))
-            .and(path(format!("/v1/post/{}", content_id)))
+            .and(path(format!("/v1/post/{content_id}")))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "items": []
             })))
@@ -231,7 +231,7 @@ mod tests {
         let content_id = Uuid::new_v4();
 
         Mock::given(method("GET"))
-            .and(path(format!("/v1/post/{}", content_id)))
+            .and(path(format!("/v1/post/{content_id}")))
             .respond_with(ResponseTemplate::new(404))
             .mount(&mock_server)
             .await;
@@ -255,7 +255,7 @@ mod tests {
         let content_id = Uuid::new_v4();
 
         Mock::given(method("GET"))
-            .and(path(format!("/v1/post/{}", content_id)))
+            .and(path(format!("/v1/post/{content_id}")))
             .respond_with(ResponseTemplate::new(500))
             .mount(&mock_server)
             .await;
@@ -279,7 +279,7 @@ mod tests {
         let content_id = Uuid::new_v4();
 
         Mock::given(method("GET"))
-            .and(path(format!("/v1/invalid_type/{}", content_id)))
+            .and(path(format!("/v1/invalid_type/{content_id}")))
             .respond_with(ResponseTemplate::new(404))
             .mount(&mock_server)
             .await;

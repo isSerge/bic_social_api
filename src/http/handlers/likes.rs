@@ -686,7 +686,7 @@ mod tests {
 
         let request = Request::builder()
             .method(http::Method::DELETE)
-            .uri(format!("/v1/likes/post/{}", content_id))
+            .uri(format!("/v1/likes/post/{content_id}"))
             .body(Body::empty())
             .unwrap();
 
@@ -738,7 +738,7 @@ mod tests {
 
         let request = Request::builder()
             .method(http::Method::GET)
-            .uri(format!("/v1/likes/post/{}/count", content_id))
+            .uri(format!("/v1/likes/post/{content_id}/count"))
             .body(Body::empty())
             .unwrap();
 
@@ -771,7 +771,7 @@ mod tests {
 
         let request = Request::builder()
             .method(http::Method::GET)
-            .uri(format!("/v1/likes/post/{}/status", content_id))
+            .uri(format!("/v1/likes/post/{content_id}/status"))
             .body(Body::empty())
             .unwrap();
 

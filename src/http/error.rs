@@ -98,7 +98,7 @@ impl IntoResponse for ApiError {
                 with_details(
                     StatusCode::NOT_FOUND,
                     "CONTENT_NOT_FOUND",
-                    format!("Content item {} of type {} does not exist", content_id, content_type),
+                    format!("Content item {content_id} of type {content_type} does not exist"),
                     json!({
                         "content_type": content_type,
                         "content_id": content_id,
@@ -109,14 +109,14 @@ impl IntoResponse for ApiError {
             ApiError::Domain(DomainError::InvalidTimeWindow(window)) => with_details(
                 StatusCode::BAD_REQUEST,
                 "INVALID_TIME_WINDOW",
-                format!("Invalid time window parameter: {}", window),
+                format!("Invalid time window parameter: {window}"),
                 json!({ "window": window }),
             ),
 
             ApiError::Domain(DomainError::BatchTooLarge { size, max }) => with_details(
                 StatusCode::BAD_REQUEST,
                 "BATCH_TOO_LARGE",
-                format!("Batch size {} exceeds maximum of {}", size, max),
+                format!("Batch size {size} exceeds maximum of {max}"),
                 json!({ "size": size, "max": max }),
             ),
 
@@ -132,7 +132,7 @@ impl IntoResponse for ApiError {
             ApiError::Domain(DomainError::InvalidCursor(cursor)) => with_details(
                 StatusCode::BAD_REQUEST,
                 "INVALID_CURSOR",
-                format!("Invalid pagination cursor: {}", cursor),
+                format!("Invalid pagination cursor: {cursor}"),
                 json!({ "cursor": cursor }),
             ),
 
@@ -271,7 +271,7 @@ mod tests {
             json!({
                 "error": {
                     "code": "CONTENT_NOT_FOUND",
-                    "message": format!("Content item {} of type post does not exist", content_id),
+                    "message": format!("Content item {content_id} of type post does not exist"),
                     "details": {
                         "content_type": "post",
                         "content_id": content_id,

@@ -486,7 +486,7 @@ mod tests {
         let db_name = format!("test_like_repo_{}", Uuid::new_v4().simple());
 
         let admin_pool = PgPool::connect(&admin_url).await.expect("connect admin pool");
-        let create_sql = format!(r#"CREATE DATABASE "{}""#, db_name);
+        let create_sql = format!(r#"CREATE DATABASE "{db_name}""#);
         sqlx::query(&create_sql).execute(&admin_pool).await.expect("create test database");
 
         let test_db_url = replace_database_in_url(&base_url, &db_name);
@@ -515,7 +515,7 @@ mod tests {
 
         let admin_pool =
             PgPool::connect(&admin_url).await.expect("connect admin pool for teardown");
-        let drop_sql = format!(r#"DROP DATABASE IF EXISTS "{}" WITH (FORCE)"#, db_name);
+        let drop_sql = format!(r#"DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)"#);
         sqlx::query(&drop_sql).execute(&admin_pool).await.expect("drop test database");
     }
 

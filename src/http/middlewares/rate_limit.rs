@@ -33,7 +33,7 @@ pub async fn rate_limiter(
     // Determine the key and limit based on request type.
     let (key, limit) = if is_write_method {
         let user_id = req.extensions().get::<Uuid>().ok_or(ApiError::Unauthorized)?; // Unauthorized should never happen if routing is correct
-        (format!("rate:write:user:{}", user_id), state.config.limits.write_per_minute)
+        (format!("rate:write:user:{user_id}"), state.config.limits.write_per_minute)
     } else {
         // Public reads - use IP address as key
         let key = format!("rate:read:ip:{}", addr.ip());
@@ -200,7 +200,7 @@ mod tests {
     async fn test_write_request_uses_user_id_and_allows_traffic() {
         let addr = test_socket_addr();
         let user_id = Uuid::new_v4();
-        let expected_key = format!("rate:write:user:{}", user_id);
+        let expected_key = format!("rate:write:user:{user_id}");
 
         let mut mock_cache = MockCacheRepository::new();
         mock_cache
